@@ -77,6 +77,7 @@ pub fn App() -> impl IntoView {
                         <Route path="/" view=DashboardPage/>
                         <Route path="/scan" view=ScanPage/>
                         <Route path="/scans" view=ScansPage/>
+                        <Route path="/schedules" view=SchedulesPage/>
                         <Route path="/scans/:id" view=ResultsPage/>
                         <Route path="/tools" view=ToolsPage/>
                         <Route path="/settings" view=SettingsPage/>

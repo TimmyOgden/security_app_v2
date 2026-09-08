@@ -36,6 +36,13 @@ async fn main() -> std::io::Result<()> {
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite:///app/data/watchtower.db?mode=rwc".into());
     let pool = db::init_db(&db_url).await;
+
+    // Background loop that fires scheduled/recurring scans when they come due.
+    let scheduler_pool = pool.clone();
+    tokio::spawn(async move {
+        watchtower::scanners::runner::run_scheduler(scheduler_pool).await;
+    });
+
     let pool_data = web::Data::new(pool);
 
     // Leptos config

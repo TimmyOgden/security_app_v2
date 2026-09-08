@@ -353,6 +353,28 @@ pub async fn run_scan(pool: DbPool, scan_job_id: i64) {
             db::insert_scan_log(&pool, scan_job_id, "warn", None, &format!("⚠️ PDF report failed: {}", e)).await;
         }
     }
+
+    // Email notification — only for scans that actually need attention, so
+    // configuring SMTP doesn't turn into an inbox full of "0 findings" mail.
+    if crit > 0 || high > 0 {
+        let subject = format!("🚨 Watchtower — {} finding(s) need attention: {}", crit + high, target);
+        let body = format!(
+            "<h2>Scan #{scan_job_id} complete</h2>\
+             <p><b>Target:</b> {target}</p>\
+             <p><b>Findings:</b> {crit} critical, {high} high, {med} medium, {low} low, {info} info</p>\
+             <p><a href=\"http://localhost:66/scans/{scan_job_id}\">View full results</a></p>"
+        );
+        match crate::services::email::send_report_email(&pool, &subject, &body, None).await {
+            Ok(_) => {
+                db::insert_scan_log(&pool, scan_job_id, "info", None,
+                    "📧 Email notification sent — critical/high findings present").await;
+            }
+            Err(e) => {
+                db::insert_scan_log(&pool, scan_job_id, "info", None,
+                    &format!("Email notification skipped ({})", e)).await;
+            }
+        }
+    }
 }
 
 async fn save_findings(pool: &DbPool, scan_job_id: i64, tools: &[String], now: &str) {
@@ -388,6 +410,56 @@ async fn save_findings(pool: &DbPool, scan_job_id: i64, tools: &[String], now: &
     .execute(pool)
     .await
     .ok();
+}
+
+/// Background loop: every minute, checks for scheduled scans that are due
+/// and kicks them off exactly like a manual "Start Scan" would (new scan_jobs
+/// row + a spawned run_scan), then reschedules for interval_hours later.
+pub async fn run_scheduler(pool: DbPool) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let due: Vec<(i64, String, String, String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT id, scan_type, target, target_source, tools, interval_hours
+             FROM scheduled_scans WHERE enabled = 1 AND next_run_at <= ?"
+        )
+        .bind(&now)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        for (schedule_id, scan_type, target, target_source, tools, interval_hours) in due {
+            let insert = sqlx::query(
+                "INSERT INTO scan_jobs (scan_type, target, target_source, status, started_at, tools_run) VALUES (?, ?, ?, 'pending', ?, ?)"
+            )
+            .bind(&scan_type)
+            .bind(&target)
+            .bind(&target_source)
+            .bind(&now)
+            .bind(tools.clone().unwrap_or_default())
+            .execute(&pool)
+            .await;
+
+            if let Ok(r) = insert {
+                let scan_job_id = r.last_insert_rowid();
+                let pool_clone = pool.clone();
+                tokio::spawn(async move {
+                    run_scan(pool_clone, scan_job_id).await;
+                });
+            }
+
+            let next_run = (chrono::Utc::now() + chrono::Duration::hours(interval_hours))
+                .format("%Y-%m-%d %H:%M:%S").to_string();
+            sqlx::query("UPDATE scheduled_scans SET last_run_at = ?, next_run_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(&next_run)
+                .bind(schedule_id)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+    }
 }
 
 fn preset_tools(scan_type: &str) -> Vec<String> {

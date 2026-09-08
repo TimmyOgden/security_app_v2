@@ -14,6 +14,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/scans/{id}/findings", web::get().to(scan_findings))
             .route("/scans/{id}/diff", web::get().to(scan_diff))
             .route("/findings/{id}/triage", web::post().to(set_finding_triage))
+            .route("/schedules", web::get().to(list_schedules))
+            .route("/schedules", web::post().to(create_schedule))
+            .route("/schedules/{id}/toggle", web::post().to(toggle_schedule))
+            .route("/schedules/{id}", web::delete().to(delete_schedule))
             .route("/scans/{id}/score", web::get().to(scan_score))
             .route("/scans/start", web::post().to(start_scan))
             .route("/scans/{id}/stop", web::post().to(stop_scan))
@@ -979,6 +983,78 @@ async fn azure_branches(pool: web::Data<DbPool>, path: web::Path<(String, String
         },
         None => HttpResponse::Ok().json(ApiResponse::<()> { success: false, message: Some("Azure DevOps not configured".into()), data: None }),
     }
+}
+
+// ── Scheduled scans ──
+
+async fn list_schedules(pool: web::Data<DbPool>) -> HttpResponse {
+    let schedules: Vec<ScheduledScan> = sqlx::query_as(
+        "SELECT id, scan_type, target, target_source, tools, interval_hours, enabled, last_run_at, next_run_at, created_at
+         FROM scheduled_scans ORDER BY id DESC"
+    )
+    .fetch_all(pool.get_ref())
+    .await
+    .unwrap_or_default();
+
+    HttpResponse::Ok().json(ApiResponse { success: true, message: None, data: Some(schedules) })
+}
+
+async fn create_schedule(pool: web::Data<DbPool>, body: web::Json<CreateScheduleRequest>) -> HttpResponse {
+    if body.interval_hours < 1 {
+        return HttpResponse::BadRequest().json(ApiResponse::<()> {
+            success: false, message: Some("interval_hours must be at least 1".into()), data: None,
+        });
+    }
+
+    let now = chrono::Utc::now();
+    let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    let next_run = (now + chrono::Duration::hours(body.interval_hours)).format("%Y-%m-%d %H:%M:%S").to_string();
+    let tools_str = body.tools.as_ref().map(|t| t.join(", "));
+
+    let result = sqlx::query(
+        "INSERT INTO scheduled_scans (scan_type, target, target_source, tools, interval_hours, enabled, next_run_at, created_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)"
+    )
+    .bind(&body.scan_type)
+    .bind(&body.target)
+    .bind(&body.target_source)
+    .bind(&tools_str)
+    .bind(body.interval_hours)
+    .bind(&next_run)
+    .bind(&now_str)
+    .execute(pool.get_ref())
+    .await;
+
+    match result {
+        Ok(r) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: Some("Schedule created".into()),
+            data: Some(serde_json::json!({ "id": r.last_insert_rowid() })),
+        }),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse::<()> {
+            success: false, message: Some(format!("Failed to create schedule: {}", e)), data: None,
+        }),
+    }
+}
+
+async fn toggle_schedule(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpResponse {
+    let id = path.into_inner();
+    sqlx::query("UPDATE scheduled_scans SET enabled = 1 - enabled WHERE id = ?")
+        .bind(id)
+        .execute(pool.get_ref())
+        .await
+        .ok();
+    HttpResponse::Ok().json(ApiResponse::<()> { success: true, message: Some("Toggled".into()), data: None })
+}
+
+async fn delete_schedule(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpResponse {
+    let id = path.into_inner();
+    sqlx::query("DELETE FROM scheduled_scans WHERE id = ?")
+        .bind(id)
+        .execute(pool.get_ref())
+        .await
+        .ok();
+    HttpResponse::Ok().json(ApiResponse::<()> { success: true, message: Some("Schedule deleted".into()), data: None })
 }
 
 // ── Helpers ──

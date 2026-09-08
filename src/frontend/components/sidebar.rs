@@ -47,6 +47,16 @@ pub fn Sidebar() -> impl IntoView {
                     </span>
                     " Scan History"
                 </A></li>
+                <li><A href="/schedules" class="nav-link">
+                    <span class="nav-icon" data-sw-icon="🌀">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="8.5"/>
+                            <path d="M12 7 A5 5 0 1 1 7 12"/>
+                            <polyline points="7 8 7 12 11 12"/>
+                        </svg>
+                    </span>
+                    " Schedules"
+                </A></li>
                 <li><A href="/tools" class="nav-link">
                     <span class="nav-icon" data-sw-icon="🚀">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

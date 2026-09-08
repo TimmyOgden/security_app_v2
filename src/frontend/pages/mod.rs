@@ -5,6 +5,7 @@ pub mod results;
 pub mod tools;
 pub mod settings;
 pub mod reports;
+pub mod schedules;
 
 pub use dashboard::DashboardPage;
 pub use scan::ScanPage;
@@ -13,3 +14,4 @@ pub use results::ResultsPage;
 pub use tools::ToolsPage;
 pub use settings::SettingsPage;
 pub use reports::ReportsPage;
+pub use schedules::SchedulesPage;

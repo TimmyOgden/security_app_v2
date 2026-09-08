@@ -42,6 +42,7 @@ pub fn ResultsPage() -> impl IntoView {
     let do_generate_pdf = {
         let scan_id = scan_id;
         move |_: leptos::ev::MouseEvent| {
+            #[allow(unused_variables)]
             let id = scan_id();
             let mut cols: Vec<String> = vec![];
             if col_severity.get_untracked()    { cols.push("severity".into()); }
@@ -560,9 +561,11 @@ pub fn ResultsPage() -> impl IntoView {
                                             else if v >= 4.0 { "cvss-medium" }
                                             else { "cvss-low" }
                                         }).unwrap_or("");
+                                        #[allow(unused_variables)]
                                         let fid = finding.id;
                                         let cur_triage = finding.triage_status.clone();
                                         let is_dismissed = matches!(cur_triage.as_deref(), Some("false_positive") | Some("wont_fix"));
+                                        #[allow(unused_variables)]
                                         let do_triage = move |status: &'static str| {
                                             move |_: leptos::ev::MouseEvent| {
                                                 #[cfg(feature = "hydrate")]

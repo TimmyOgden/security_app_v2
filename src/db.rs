@@ -83,6 +83,24 @@ pub async fn init_db(database_url: &str) -> DbPool {
     .expect("Failed to create finding_triage table");
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS scheduled_scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_type TEXT NOT NULL,
+            target TEXT NOT NULL,
+            target_source TEXT NOT NULL,
+            tools TEXT,
+            interval_hours INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_run_at TEXT,
+            next_run_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create scheduled_scans table");
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scan_job_id INTEGER NOT NULL,

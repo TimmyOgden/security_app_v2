@@ -61,6 +61,30 @@ pub struct TriageRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ssr", derive(sqlx::FromRow))]
+pub struct ScheduledScan {
+    pub id: i64,
+    pub scan_type: String,
+    pub target: String,
+    pub target_source: String,
+    pub tools: Option<String>,
+    pub interval_hours: i64,
+    pub enabled: bool,
+    pub last_run_at: Option<String>,
+    pub next_run_at: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateScheduleRequest {
+    pub scan_type: String,
+    pub target: String,
+    pub target_source: String,
+    pub tools: Option<Vec<String>>,
+    pub interval_hours: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanDiffResponse {
     pub compared_to_scan_id: Option<i64>,
     pub compared_to_started_at: Option<String>,
