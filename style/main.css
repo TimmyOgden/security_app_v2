@@ -158,7 +158,7 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
 .main-content {
     margin-left: 250px;
     padding: 32px 36px;
-    padding-bottom: 90px;
+    padding-bottom: 120px;
     flex: 1;
     min-width: 0;
 }
@@ -715,6 +715,14 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
 }
 
 .alert-info { background: rgba(91, 157, 217, 0.09); border: 1px solid rgba(91, 157, 217, 0.28); color: var(--low); }
+.alert-error { background: rgba(240, 87, 107, 0.09); border: 1px solid rgba(240, 87, 107, 0.28); color: var(--critical); }
+
+.form-hint {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin: -8px 0 16px;
+    line-height: 1.5;
+}
 
 /* ── Toast ── */
 .toast {

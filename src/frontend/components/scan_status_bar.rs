@@ -4,7 +4,7 @@ use crate::models::*;
 #[component]
 pub fn ScanStatusBar() -> impl IntoView {
     let (scans, _set_scans) = create_signal(Vec::<ScanJob>::new());
-    let (minimized, set_minimized) = create_signal(false);
+    let (minimized, set_minimized) = create_signal(true);
     let (dismissed_ids, set_dismissed_ids) = create_signal(Vec::<i64>::new());
 
     #[cfg(feature = "hydrate")]
