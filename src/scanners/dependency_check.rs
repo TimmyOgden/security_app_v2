@@ -16,6 +16,10 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
             "--format", "JSON",
             "--out", &report_dir,
             "--data", "/opt/dependency-check/data",
+            // Cargo/Rust (and several other ecosystem) analyzers are shipped
+            // disabled upstream unless this flag is set — without it, a Rust
+            // project's Cargo.lock is silently skipped entirely.
+            "--enableExperimental",
             "--exclude", "**/node_modules/**",
             "--exclude", "**/.git/**",
             "--exclude", "**/venv/**",

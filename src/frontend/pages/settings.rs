@@ -4,7 +4,7 @@ use crate::models::*;
 #[component]
 pub fn SettingsPage() -> impl IntoView {
     let (saved_msg, set_saved_msg) = create_signal(Option::<String>::None);
-    let settings = create_resource(|| (), |_| async { fetch_settings().await });
+    let settings = create_local_resource(|| (), |_| async { fetch_settings().await });
 
     // Setting signals
     let (azure_org, set_azure_org) = create_signal(String::new());

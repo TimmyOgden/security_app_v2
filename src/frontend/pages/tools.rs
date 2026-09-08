@@ -4,7 +4,7 @@ use crate::frontend::app::RESTRICTED_TOOLS;
 
 #[component]
 pub fn ToolsPage() -> impl IntoView {
-    let tools = create_resource(|| (), |_| async { fetch_tools().await });
+    let tools = create_local_resource(|| (), |_| async { fetch_tools().await });
     let advanced_mode = use_context::<ReadSignal<bool>>().unwrap_or_else(|| create_signal(false).0);
 
     view! {

@@ -105,16 +105,11 @@
     }
 
     // ── Lightsaber Icon Swap ──
-    var swNavMap = {
-        '\u{1F4CA}': '\u{1F311}',   // 📊 → 🌑 Death Star
-        '\u{1F50D}': '\u26A1',       // 🔍 → ⚡ Force Lightning
-        '\u{1F4CB}': '\u{1F4DC}',   // 📋 → 📜 Jedi Archives
-        '\u{1F6E0}\uFE0F': '\u{1F680}', // 🛠️ → 🚀 Star Destroyer
-        '\u{1F4C4}': '\u{1F4E1}',   // 📄 → 📡 Hologram
-        '\u2699\uFE0F': '\u{1F52E}' // ⚙️ → 🔮 Holocron
-    };
-    var swNavReverse = {};
-    Object.keys(swNavMap).forEach(function(k) { swNavReverse[swNavMap[k]] = k; });
+    // Icons are inline SVGs now (not emoji text). Each icon element carries its
+    // own Star Wars replacement glyph in a data-sw-icon attribute (set in
+    // sidebar.rs), so instead of matching emoji characters we just save the
+    // real SVG markup once and swap it for the emoji while active, restoring
+    // the saved SVG afterward.
 
     // Module-level state for icon swapping (persists across calls)
     var _swBusy = false;
@@ -128,20 +123,20 @@
         if (_swObs) _swObs.disconnect();
 
         try {
-            // Title icon
-            var el = document.querySelector('.sidebar-icon');
-            if (el) {
-                var want = toSaber ? '\uD83D\uDDE1\uFE0F' : '\u2694\uFE0F';
-                if (el.textContent !== want) el.textContent = want;
-            }
-            // Nav icons
-            var navIcons = document.querySelectorAll('.nav-icon');
-            navIcons.forEach(function(icon) {
-                var txt = icon.textContent.trim();
-                if (toSaber && swNavMap[txt]) {
-                    icon.textContent = swNavMap[txt];
-                } else if (!toSaber && swNavReverse[txt]) {
-                    icon.textContent = swNavReverse[txt];
+            var icons = document.querySelectorAll('.sidebar-icon[data-sw-icon], .nav-icon[data-sw-icon]');
+            icons.forEach(function(icon) {
+                if (toSaber) {
+                    if (!icon.dataset.normalHtml) {
+                        icon.dataset.normalHtml = icon.innerHTML;
+                    }
+                    if (icon.dataset.swActive !== '1') {
+                        var glyph = icon.getAttribute('data-sw-icon');
+                        icon.innerHTML = '<span aria-hidden="true">' + glyph + '</span>';
+                        icon.dataset.swActive = '1';
+                    }
+                } else if (icon.dataset.swActive === '1' && icon.dataset.normalHtml) {
+                    icon.innerHTML = icon.dataset.normalHtml;
+                    icon.dataset.swActive = '0';
                 }
             });
         } catch(e) {}

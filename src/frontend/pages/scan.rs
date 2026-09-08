@@ -15,11 +15,11 @@ pub fn ScanPage() -> impl IntoView {
     // Read advanced mode from context — hides restricted tools when false
     let advanced_mode = use_context::<ReadSignal<bool>>().unwrap_or_else(|| create_signal(false).0);
 
-    let drives = create_resource(|| (), |_| async { fetch_drives().await });
-    let presets = create_resource(|| (), |_| async { fetch_presets().await });
-    let tools = create_resource(|| (), |_| async { fetch_tools().await });
+    let drives = create_local_resource(|| (), |_| async { fetch_drives().await });
+    let presets = create_local_resource(|| (), |_| async { fetch_presets().await });
+    let tools = create_local_resource(|| (), |_| async { fetch_tools().await });
 
-    let folders = create_resource(
+    let folders = create_local_resource(
         move || browse_path.get(),
         |path| async move { fetch_folders(path).await },
     );

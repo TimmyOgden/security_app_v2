@@ -4,7 +4,7 @@ use super::super::components::stat_card::StatCard;
 
 #[component]
 pub fn DashboardPage() -> impl IntoView {
-    let stats = create_resource(|| (), |_| async move {
+    let stats = create_local_resource(|| (), |_| async move {
         fetch_dashboard().await
     });
 

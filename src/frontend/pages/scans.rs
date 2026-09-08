@@ -5,7 +5,7 @@ use crate::models::*;
 pub fn ScansPage() -> impl IntoView {
     let (refresh_counter, set_refresh_counter) = create_signal(0u32);
 
-    let scans = create_resource(move || refresh_counter.get(), |_| async { fetch_scans().await });
+    let scans = create_local_resource(move || refresh_counter.get(), |_| async { fetch_scans().await });
 
     view! {
         <div class="page-header">

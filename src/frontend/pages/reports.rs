@@ -3,7 +3,7 @@ use crate::models::*;
 
 #[component]
 pub fn ReportsPage() -> impl IntoView {
-    let reports = create_resource(|| (), |_| async { fetch_reports().await });
+    let reports = create_local_resource(|| (), |_| async { fetch_reports().await });
 
     view! {
         <div class="page-header">

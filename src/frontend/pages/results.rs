@@ -100,11 +100,11 @@ pub fn ResultsPage() -> impl IntoView {
         }
     };
 
-    let findings = create_resource(scan_id, |id| async move {
+    let findings = create_local_resource(scan_id, |id| async move {
         fetch_findings(id).await
     });
 
-    let scores = create_resource(scan_id, |id| async move {
+    let scores = create_local_resource(scan_id, |id| async move {
         fetch_scores(id).await
     });
 
