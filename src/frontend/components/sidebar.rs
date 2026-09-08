@@ -1,7 +1,10 @@
 use leptos::*;
 use leptos_router::*;
-use crate::models::{ApiResponse, HealthStatus};
+#[cfg(feature = "hydrate")]
+use crate::models::ApiResponse;
+use crate::models::HealthStatus;
 
+#[allow(dead_code)]
 async fn fetch_health() -> Option<HealthStatus> {
     #[cfg(feature = "hydrate")]
     {
@@ -13,6 +16,7 @@ async fn fetch_health() -> Option<HealthStatus> {
     { None }
 }
 
+#[allow(dead_code)]
 fn read_stored_theme() -> bool {
     #[cfg(feature = "hydrate")]
     {
@@ -48,6 +52,7 @@ fn apply_theme(light: bool) {
 
 #[component]
 pub fn Sidebar() -> impl IntoView {
+    #[allow(unused_variables)]
     let (health, set_health) = create_signal(Option::<HealthStatus>::None);
     let (light_mode, set_light_mode) = create_signal(false);
 

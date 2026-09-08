@@ -30,6 +30,7 @@ log = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "Window", "Storage", "CustomEvent", "console", "HtmlAudioElement", "HtmlInputElement", "EventTarget",
+    "EventSource", "EventSourceInit", "MessageEvent", "Element", "DomTokenList",
 ] }
 
 # Server-only
@@ -49,6 +50,7 @@ quick-xml = { version = "0.36", features = ["serialize"], optional = true }
 ammonia = { version = "4", optional = true }
 regex = { version = "1", optional = true }
 once_cell = { version = "1", optional = true }
+async-stream = { version = "0.3", optional = true }
 
 [features]
 default = []
@@ -81,6 +83,7 @@ ssr = [
     "dep:ammonia",
     "dep:regex",
     "dep:once_cell",
+    "dep:async-stream",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

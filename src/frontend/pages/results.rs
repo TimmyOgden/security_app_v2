@@ -11,6 +11,13 @@ pub fn ResultsPage() -> impl IntoView {
     let scan_id = move || {
         params.with(|p| p.get("id").cloned().unwrap_or_default().parse::<i64>().unwrap_or(0))
     };
+    // Route params can notify subscribers more than once while they "settle"
+    // on initial load even though the resolved id never actually changes.
+    // Resources dedupe that automatically (source values are compared via
+    // PartialEq); plain create_effect does not, so anything driving a
+    // side effect (like opening an SSE connection) off scan_id reads
+    // through this memo instead, to avoid doing that side effect twice.
+    let scan_id_memo = create_memo(move |_| scan_id());
 
     let (log_entries, _set_log_entries) = create_signal(Vec::<LogEntry>::new());
     let (status_data, _set_status_data) = create_signal(None::<ScanStatusResponse>);
@@ -155,30 +162,64 @@ pub fn ResultsPage() -> impl IntoView {
         tools
     });
 
-    // Poll for status + logs
+    // Live log tail via Server-Sent Events — pushes new lines as they're
+    // written instead of re-fetching and replacing the whole list every few
+    // seconds. Falls back to nothing if EventSource isn't available; the
+    // status-poll effect below still drives the progress bar either way.
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::JsCast;
+        create_effect(move |_| {
+            let id = scan_id_memo.get();
+            let set_logs = _set_log_entries;
+            set_logs.set(Vec::new());
+
+            if let Ok(es) = web_sys::EventSource::new(&format!("/api/scans/{}/stream", id)) {
+                let es_clone = es.clone();
+                let onmessage = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
+                    move |ev: web_sys::MessageEvent| {
+                        if let Some(text) = ev.data().as_string() {
+                            if let Ok(entry) = serde_json::from_str::<LogEntry>(&text) {
+                                set_logs.update(|v| v.push(entry));
+                            }
+                        }
+                    },
+                );
+                es.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+                onmessage.forget();
+
+                let ondone = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
+                    move |_ev: web_sys::MessageEvent| {
+                        es_clone.close();
+                    },
+                );
+                let _ = es.add_event_listener_with_callback("done", ondone.as_ref().unchecked_ref());
+                ondone.forget();
+
+                let es_for_cleanup = es;
+                on_cleanup(move || es_for_cleanup.close());
+            }
+        });
+    }
+
+    // Poll for status (progress bar, tools_completed, etc.) — logs now
+    // arrive live via the SSE effect above instead of being re-fetched here.
     #[cfg(feature = "hydrate")]
     {
         create_effect(move |_| {
-            let id = scan_id();
+            let id = scan_id_memo.get();
             let set_status = _set_status_data;
-            let set_logs = _set_log_entries;
 
             let handle = gloo_timers::callback::Interval::new(3_000, move || {
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(s) = fetch_status(id).await {
                         let done = s.status == "completed" || s.status == "failed";
                         set_status.set(Some(s));
-                        if done {
-                            if !_scan_completed.get_untracked() {
-                                _set_scan_completed.set(true);
-                                scores.refetch();
-                                findings.refetch();
-                            }
-                            return;
+                        if done && !_scan_completed.get_untracked() {
+                            _set_scan_completed.set(true);
+                            scores.refetch();
+                            findings.refetch();
                         }
-                    }
-                    if let Ok(logs) = fetch_logs(id).await {
-                        set_logs.set(logs);
                     }
                 });
             });

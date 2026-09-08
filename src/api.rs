@@ -11,6 +11,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/scans/{id}", web::get().to(get_scan))
             .route("/scans/{id}/status", web::get().to(scan_status))
             .route("/scans/{id}/logs", web::get().to(scan_logs))
+            .route("/scans/{id}/stream", web::get().to(scan_log_stream))
             .route("/scans/{id}/findings", web::get().to(scan_findings))
             .route("/scans/{id}/diff", web::get().to(scan_diff))
             .route("/findings/{id}/triage", web::post().to(set_finding_triage))
@@ -175,6 +176,62 @@ async fn scan_logs(pool: web::Data<DbPool>, path: web::Path<i64>, query: web::Qu
 #[derive(serde::Deserialize)]
 struct LogsQuery {
     after: Option<i64>,
+}
+
+/// Live log tail via Server-Sent Events — replaces the frontend's old 3s
+/// poll of /logs with a genuine push as soon as a new scan_logs row lands,
+/// and closes itself once the scan reaches a terminal status.
+async fn scan_log_stream(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpResponse {
+    let scan_id = path.into_inner();
+    let pool = pool.get_ref().clone();
+
+    let body = async_stream::stream! {
+        let mut last_id = 0i64;
+        loop {
+            let logs: Vec<(i64, String, String, Option<String>, String)> = sqlx::query_as(
+                "SELECT id, timestamp, level, tool, message FROM scan_logs WHERE scan_job_id = ? AND id > ? ORDER BY id ASC"
+            )
+            .bind(scan_id)
+            .bind(last_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+            for (id, timestamp, level, tool, message) in logs {
+                last_id = id;
+                let entry = LogEntry { timestamp, level, tool, message };
+                if let Ok(json) = serde_json::to_string(&entry) {
+                    yield Ok::<_, actix_web::Error>(web::Bytes::from(format!("data: {}\n\n", json)));
+                }
+            }
+
+            let status: Option<(String,)> = sqlx::query_as("SELECT status FROM scan_jobs WHERE id = ?")
+                .bind(scan_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap_or(None);
+
+            match status {
+                Some((s,)) if matches!(s.as_str(), "completed" | "failed" | "stopped") => {
+                    yield Ok(web::Bytes::from_static(b"event: done\ndata: {}\n\n"));
+                    break;
+                }
+                None => break,
+                _ => {}
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+    };
+
+    HttpResponse::Ok()
+        .content_type("text/event-stream")
+        .insert_header(("Cache-Control", "no-cache"))
+        // Tell the global Compress middleware to leave this alone — gzip
+        // buffers the whole body before flushing, which defeats SSE
+        // entirely (the browser gets nothing until the stream ends).
+        .insert_header(("Content-Encoding", "identity"))
+        .streaming(body)
 }
 
 async fn scan_findings(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpResponse {
