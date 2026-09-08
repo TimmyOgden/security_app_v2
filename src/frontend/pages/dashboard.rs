@@ -8,6 +8,26 @@ pub fn DashboardPage() -> impl IntoView {
         fetch_dashboard().await
     });
 
+    // First-run wizard: if this browser has never seen it and nothing has
+    // been scanned yet, send them to a short setup/intro flow instead of an
+    // empty dashboard. Only ever fires once per browser (localStorage-gated).
+    #[cfg(feature = "hydrate")]
+    {
+        create_effect(move |_| {
+            if let Some(Ok(d)) = stats.get() {
+                if d.total_scans == 0 {
+                    let seen = web_sys::window()
+                        .and_then(|w| w.local_storage().ok().flatten())
+                        .and_then(|s| s.get_item("watchtower-welcome-seen").ok().flatten())
+                        .is_some();
+                    if !seen {
+                        leptos_router::use_navigate()("/welcome", Default::default());
+                    }
+                }
+            }
+        });
+    }
+
     view! {
         <div class="page-header">
             <h1>"📊 Dashboard"</h1>
