@@ -35,6 +35,53 @@
     --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 6px 20px rgba(0, 0, 0, 0.28);
 }
 
+/* ── Light Theme ── toggled via the sidebar sun/moon button, persisted to
+   localStorage. Overrides the same custom properties body.starwars-mode
+   uses, so the two are mutually exclusive by construction (Star Wars mode
+   wins if both classes somehow ended up on body, since it's declared later
+   in the cascade). */
+body.light-mode {
+    --bg-primary: #f5f3ec;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-sidebar: #faf8f2;
+    --bg-input: #ffffff;
+    --text-primary: #1c1f24;
+    --text-secondary: #5c6470;
+    --text-muted: #8b93a0;
+    --accent: #0d9488;
+    --accent-hover: #0f766e;
+    --accent-ink: #ffffff;
+    --border: #e3ddd0;
+    --border-soft: #ece7da;
+    --critical: #c8323f;
+    --high: #c2660a;
+    --medium: #93720a;
+    --low: #1c6e8c;
+    --info: #6b7280;
+    --success: #178a5f;
+    --shadow-sm: 0 1px 2px rgba(28, 31, 36, 0.08);
+    --shadow-md: 0 8px 24px rgba(28, 31, 36, 0.1);
+    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 2px 10px rgba(28, 31, 36, 0.06);
+}
+
+body.light-mode .severity-critical,
+body.light-mode .severity-high,
+body.light-mode .severity-medium,
+body.light-mode .severity-low,
+body.light-mode .severity-info,
+body.light-mode .sev-bar-critical,
+body.light-mode .sev-bar-high,
+body.light-mode .sev-bar-medium,
+body.light-mode .sev-bar-low,
+body.light-mode .sev-bar-info {
+    color: #ffffff;
+}
+
+body.light-mode .scan-log-terminal {
+    background: #14181f;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -102,6 +149,33 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
     letter-spacing: 1.5px;
 }
 
+.sidebar-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 5px;
+}
+
+.theme-toggle-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+
+.theme-toggle-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 .sidebar-nav {
     list-style: none;
     padding: 14px 10px;
@@ -153,6 +227,22 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
     color: var(--text-muted);
     font-style: italic;
     line-height: 1.5;
+    margin-top: 10px;
+}
+
+.sidebar-health {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.health-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
 }
 
 .main-content {

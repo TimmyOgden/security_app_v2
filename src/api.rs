@@ -18,6 +18,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/schedules", web::post().to(create_schedule))
             .route("/schedules/{id}/toggle", web::post().to(toggle_schedule))
             .route("/schedules/{id}", web::delete().to(delete_schedule))
+            .route("/health", web::get().to(health_check))
             .route("/scans/{id}/score", web::get().to(scan_score))
             .route("/scans/start", web::post().to(start_scan))
             .route("/scans/{id}/stop", web::post().to(stop_scan))
@@ -1055,6 +1056,32 @@ async fn delete_schedule(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpR
         .await
         .ok();
     HttpResponse::Ok().json(ApiResponse::<()> { success: true, message: Some("Schedule deleted".into()), data: None })
+}
+
+async fn health_check() -> HttpResponse {
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::Ok().json(ApiResponse {
+            success: true, message: None, data: Some(HealthStatus { zap: false, sonarqube: false }),
+        }),
+    };
+
+    let zap_url = std::env::var("ZAP_URL").unwrap_or_else(|_| "http://zap:8080".into());
+    let zap_ok = client.get(format!("{}/JSON/core/view/version/?apikey=changeme", zap_url))
+        .send().await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    let sonar_ok = client.get("http://sonarqube:9000/api/system/status")
+        .send().await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    HttpResponse::Ok().json(ApiResponse {
+        success: true,
+        message: None,
+        data: Some(HealthStatus { zap: zap_ok, sonarqube: sonar_ok }),
+    })
 }
 
 // ── Helpers ──

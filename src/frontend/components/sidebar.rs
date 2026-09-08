@@ -1,8 +1,81 @@
 use leptos::*;
 use leptos_router::*;
+use crate::models::{ApiResponse, HealthStatus};
+
+async fn fetch_health() -> Option<HealthStatus> {
+    #[cfg(feature = "hydrate")]
+    {
+        let resp = gloo_net::http::Request::get("/api/health").send().await.ok()?;
+        let api: ApiResponse<HealthStatus> = resp.json().await.ok()?;
+        api.data
+    }
+    #[cfg(not(feature = "hydrate"))]
+    { None }
+}
+
+fn read_stored_theme() -> bool {
+    #[cfg(feature = "hydrate")]
+    {
+        web_sys::window()
+            .and_then(|w| w.local_storage().ok().flatten())
+            .and_then(|s| s.get_item("watchtower-theme").ok().flatten())
+            .map(|v| v == "light")
+            .unwrap_or(false)
+    }
+    #[cfg(not(feature = "hydrate"))]
+    { false }
+}
+
+fn apply_theme(light: bool) {
+    #[cfg(feature = "hydrate")]
+    {
+        if let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) {
+            use wasm_bindgen::JsCast;
+            let class_list = body.unchecked_ref::<web_sys::Element>().class_list();
+            if light {
+                let _ = class_list.add_1("light-mode");
+            } else {
+                let _ = class_list.remove_1("light-mode");
+            }
+        }
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.set_item("watchtower-theme", if light { "light" } else { "dark" });
+        }
+    }
+    #[cfg(not(feature = "hydrate"))]
+    { let _ = light; }
+}
 
 #[component]
 pub fn Sidebar() -> impl IntoView {
+    let (health, set_health) = create_signal(Option::<HealthStatus>::None);
+    let (light_mode, set_light_mode) = create_signal(false);
+
+    #[cfg(feature = "hydrate")]
+    {
+        create_effect(move |_| {
+            let stored = read_stored_theme();
+            set_light_mode.set(stored);
+            apply_theme(stored);
+        });
+    }
+
+    #[cfg(feature = "hydrate")]
+    {
+        create_effect(move |_| {
+            let set_health = set_health;
+            wasm_bindgen_futures::spawn_local(async move {
+                set_health.set(fetch_health().await);
+            });
+            let handle = gloo_timers::callback::Interval::new(30_000, move || {
+                wasm_bindgen_futures::spawn_local(async move {
+                    set_health.set(fetch_health().await);
+                });
+            });
+            on_cleanup(move || drop(handle));
+        });
+    }
+
     view! {
         <nav class="sidebar">
             <div class="sidebar-header">
@@ -15,7 +88,31 @@ pub fn Sidebar() -> impl IntoView {
                     </span>
                     " Watchtower"
                 </h2>
-                <span class="sidebar-version">"v2 • Rust"</span>
+                <div class="sidebar-header-row">
+                    <span class="sidebar-version">"v2 • Rust"</span>
+                    <button class="theme-toggle-btn"
+                        title="Toggle light/dark theme"
+                        on:click=move |_| {
+                            let next = !light_mode.get();
+                            set_light_mode.set(next);
+                            apply_theme(next);
+                        }>
+                        {move || if light_mode.get() {
+                            view! {
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="4"/>
+                                    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+                                </svg>
+                            }
+                        } else {
+                            view! {
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 12.5A8.5 8.5 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z"/>
+                                </svg>
+                            }
+                        }}
+                    </button>
+                </div>
             </div>
             <ul class="sidebar-nav">
                 <li><A href="/" class="nav-link" exact=true>
@@ -90,6 +187,23 @@ pub fn Sidebar() -> impl IntoView {
                 </A></li>
             </ul>
             <div class="sidebar-footer">
+                <div class="sidebar-health">
+                    {move || {
+                        let h = health.get();
+                        let zap_ok = h.as_ref().map(|h| h.zap).unwrap_or(false);
+                        let sonar_ok = h.as_ref().map(|h| h.sonarqube).unwrap_or(false);
+                        view! {
+                            <span class="health-item" title=if zap_ok { "ZAP reachable" } else { "ZAP unreachable" }>
+                                <span class=format!("status-dot {}", if zap_ok { "green" } else { "red" })></span>
+                                " ZAP"
+                            </span>
+                            <span class="health-item" title=if sonar_ok { "SonarQube reachable" } else { "SonarQube unreachable" }>
+                                <span class=format!("status-dot {}", if sonar_ok { "green" } else { "red" })></span>
+                                " SonarQube"
+                            </span>
+                        }
+                    }}
+                </div>
                 <p class="sidebar-quote">"\"I find your lack of security disturbing.\""</p>
             </div>
         </nav>

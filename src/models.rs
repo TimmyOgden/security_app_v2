@@ -85,6 +85,12 @@ pub struct CreateScheduleRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthStatus {
+    pub zap: bool,
+    pub sonarqube: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanDiffResponse {
     pub compared_to_scan_id: Option<i64>,
     pub compared_to_started_at: Option<String>,
