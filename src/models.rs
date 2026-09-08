@@ -48,6 +48,25 @@ pub struct Finding {
     pub rule_url: Option<String>,
     pub data_flow: Option<String>,
     pub issue_type: Option<String>,
+    pub fingerprint: Option<String>,
+    pub triage_status: Option<String>,
+    pub triage_note: Option<String>,
+}
+
+/// Body for POST /api/findings/:id/triage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriageRequest {
+    pub status: String,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanDiffResponse {
+    pub compared_to_scan_id: Option<i64>,
+    pub compared_to_started_at: Option<String>,
+    pub new_findings: Vec<Finding>,
+    pub resolved_findings: Vec<Finding>,
+    pub unchanged_count: i64,
 }
 
 /// Options sent from the frontend when generating a custom PDF report.

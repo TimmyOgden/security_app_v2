@@ -68,6 +68,21 @@ pub async fn init_db(database_url: &str) -> DbPool {
     .expect("Failed to create findings table");
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS finding_triage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            triage_status TEXT NOT NULL DEFAULT 'open',
+            note TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(target, fingerprint)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create finding_triage table");
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scan_job_id INTEGER NOT NULL,
@@ -113,7 +128,28 @@ pub async fn init_db(database_url: &str) -> DbPool {
         .execute(&pool)
         .await;
 
+    // Migration: fingerprint is a stable identity for "the same finding" across
+    // scans (tool+title+file_path+cwe_id), used for triage persistence and
+    // scan-to-scan diffing.
+    let _ = sqlx::query("ALTER TABLE findings ADD COLUMN fingerprint TEXT")
+        .execute(&pool)
+        .await;
+
     pool
+}
+
+/// Stable identity for a finding, independent of scan_job_id/row id, so a
+/// triage decision ("false positive") and diffing between scans both survive
+/// a fresh re-scan producing entirely new finding rows.
+#[cfg(feature = "ssr")]
+pub fn compute_fingerprint(tool: &str, title: &str, file_path: Option<&str>, cwe_id: Option<&str>) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tool.hash(&mut hasher);
+    title.hash(&mut hasher);
+    file_path.unwrap_or("").hash(&mut hasher);
+    cwe_id.unwrap_or("").hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 // ── Query helpers ──
@@ -136,6 +172,27 @@ pub async fn set_setting(pool: &DbPool, key: &str, value: &str) {
     )
     .bind(key)
     .bind(value)
+    .execute(pool)
+    .await
+    .ok();
+}
+
+#[cfg(feature = "ssr")]
+pub async fn set_finding_triage(pool: &DbPool, target: &str, fingerprint: &str, status: &str, note: Option<&str>) {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    sqlx::query(
+        "INSERT INTO finding_triage (target, fingerprint, triage_status, note, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(target, fingerprint) DO UPDATE SET
+            triage_status = excluded.triage_status,
+            note = excluded.note,
+            updated_at = excluded.updated_at",
+    )
+    .bind(target)
+    .bind(fingerprint)
+    .bind(status)
+    .bind(note)
+    .bind(&now)
     .execute(pool)
     .await
     .ok();

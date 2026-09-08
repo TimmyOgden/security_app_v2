@@ -12,6 +12,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/scans/{id}/status", web::get().to(scan_status))
             .route("/scans/{id}/logs", web::get().to(scan_logs))
             .route("/scans/{id}/findings", web::get().to(scan_findings))
+            .route("/scans/{id}/diff", web::get().to(scan_diff))
+            .route("/findings/{id}/triage", web::post().to(set_finding_triage))
             .route("/scans/{id}/score", web::get().to(scan_score))
             .route("/scans/start", web::post().to(start_scan))
             .route("/scans/{id}/stop", web::post().to(stop_scan))
@@ -174,6 +176,119 @@ async fn scan_findings(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpRes
     let id = path.into_inner();
     let findings: Vec<Finding> = fetch_findings(pool.get_ref(), id).await;
     HttpResponse::Ok().json(ApiResponse { success: true, message: None, data: Some(findings) })
+}
+
+async fn set_finding_triage(pool: web::Data<DbPool>, path: web::Path<i64>, body: web::Json<TriageRequest>) -> HttpResponse {
+    let finding_id = path.into_inner();
+
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT s.target, f.fingerprint FROM findings f
+         JOIN scan_jobs s ON s.id = f.scan_job_id
+         WHERE f.id = ?"
+    )
+    .bind(finding_id)
+    .fetch_optional(pool.get_ref())
+    .await
+    .unwrap_or(None);
+
+    let (target, fingerprint) = match row {
+        Some((t, Some(fp))) if !fp.is_empty() => (t, fp),
+        Some((_, fp)) => {
+            return HttpResponse::BadRequest().json(ApiResponse::<()> {
+                success: false,
+                message: Some(format!("Finding has no fingerprint (fp={:?}) — was it saved before this feature shipped?", fp)),
+                data: None,
+            });
+        }
+        None => {
+            return HttpResponse::NotFound().json(ApiResponse::<()> {
+                success: false,
+                message: Some("Finding not found".into()),
+                data: None,
+            });
+        }
+    };
+
+    db::set_finding_triage(pool.get_ref(), &target, &fingerprint, &body.status, body.note.as_deref()).await;
+
+    HttpResponse::Ok().json(ApiResponse::<()> {
+        success: true,
+        message: Some("Triage updated".into()),
+        data: None,
+    })
+}
+
+/// Compares a scan's findings against its target's most recent other
+/// completed scan, by fingerprint — surfaces what's newly appeared and
+/// what's since been resolved instead of making you eyeball two full lists.
+async fn scan_diff(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpResponse {
+    let scan_id = path.into_inner();
+
+    let target: Option<(String,)> = sqlx::query_as("SELECT target FROM scan_jobs WHERE id = ?")
+        .bind(scan_id)
+        .fetch_optional(pool.get_ref())
+        .await
+        .unwrap_or(None);
+
+    let target = match target {
+        Some((t,)) => t,
+        None => {
+            return HttpResponse::NotFound().json(ApiResponse::<()> {
+                success: false, message: Some("Scan not found".into()), data: None,
+            });
+        }
+    };
+
+    let prev: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, started_at FROM scan_jobs
+         WHERE target = ? AND id != ? AND status = 'completed'
+         ORDER BY id DESC LIMIT 1"
+    )
+    .bind(&target)
+    .bind(scan_id)
+    .fetch_optional(pool.get_ref())
+    .await
+    .unwrap_or(None);
+
+    let (prev_id, prev_started_at) = match prev {
+        Some((id, started)) => (Some(id), Some(started)),
+        None => (None, None),
+    };
+
+    let current_findings = fetch_findings(pool.get_ref(), scan_id).await;
+    let prev_findings = match prev_id {
+        Some(pid) => fetch_findings(pool.get_ref(), pid).await,
+        None => vec![],
+    };
+
+    let prev_fps: std::collections::HashSet<String> = prev_findings.iter()
+        .filter_map(|f| f.fingerprint.clone())
+        .collect();
+    let cur_fps: std::collections::HashSet<String> = current_findings.iter()
+        .filter_map(|f| f.fingerprint.clone())
+        .collect();
+
+    let new_findings: Vec<Finding> = current_findings.iter()
+        .filter(|f| f.fingerprint.as_ref().map(|fp| !prev_fps.contains(fp)).unwrap_or(true))
+        .cloned()
+        .collect();
+    let resolved_findings: Vec<Finding> = prev_findings.iter()
+        .filter(|f| f.fingerprint.as_ref().map(|fp| !cur_fps.contains(fp)).unwrap_or(true))
+        .cloned()
+        .collect();
+    let unchanged_count = cur_fps.intersection(&prev_fps).count() as i64;
+
+    HttpResponse::Ok().json(ApiResponse {
+        success: true,
+        message: None,
+        data: Some(ScanDiffResponse {
+            compared_to_scan_id: prev_id,
+            compared_to_started_at: prev_started_at,
+            new_findings,
+            resolved_findings,
+            unchanged_count,
+        }),
+    })
 }
 
 fn compute_score(critical: i64, high: i64, medium: i64, low: i64, _info: i64) -> i64 {
@@ -901,16 +1016,23 @@ async fn fetch_scan_job(pool: &DbPool, id: i64) -> Option<ScanJob> {
     .flatten()
 }
 
+const FINDING_SELECT: &str = "SELECT f.id, f.scan_job_id, f.tool, f.severity, f.title, f.description, f.file_path, f.line_number,
+                f.cwe_id, f.cvss_score, f.raw_output, f.recommendation,
+                f.text_range_start, f.text_range_end, f.status, f.author, f.rule_url, f.data_flow, f.issue_type,
+                f.fingerprint, t.triage_status, t.note as triage_note
+         FROM findings f
+         JOIN scan_jobs s ON s.id = f.scan_job_id
+         LEFT JOIN finding_triage t ON t.target = s.target AND t.fingerprint = f.fingerprint";
+
 async fn fetch_findings(pool: &DbPool, scan_job_id: i64) -> Vec<Finding> {
-    sqlx::query_as::<_, Finding>(
-        "SELECT id, scan_job_id, tool, severity, title, description, file_path, line_number,
-                cwe_id, cvss_score, raw_output, recommendation,
-                text_range_start, text_range_end, status, author, rule_url, data_flow, issue_type
-         FROM findings WHERE scan_job_id = ?
-         ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
-    )
-    .bind(scan_job_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default()
+    let sql = format!(
+        "{} WHERE f.scan_job_id = ?
+         ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END",
+        FINDING_SELECT
+    );
+    sqlx::query_as::<_, Finding>(&sql)
+        .bind(scan_job_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
 }

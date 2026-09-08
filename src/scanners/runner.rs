@@ -255,9 +255,12 @@ pub async fn run_scan(pool: DbPool, scan_job_id: i64) {
 
         // Persist this tool's findings to the DB immediately so they survive a restart.
         for f in &findings {
+            let fingerprint = crate::db::compute_fingerprint(
+                &f.tool, &f.title, f.file_path.as_deref(), f.cwe_id.as_deref(),
+            );
             sqlx::query(
-                "INSERT INTO findings (scan_job_id, tool, severity, title, description, file_path, line_number, cwe_id, cvss_score, recommendation, issue_type)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO findings (scan_job_id, tool, severity, title, description, file_path, line_number, cwe_id, cvss_score, recommendation, issue_type, fingerprint)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(scan_job_id)
             .bind(&f.tool)
@@ -270,6 +273,7 @@ pub async fn run_scan(pool: DbPool, scan_job_id: i64) {
             .bind(f.cvss_score)
             .bind(&f.recommendation)
             .bind(&f.issue_type)
+            .bind(&fingerprint)
             .execute(&pool)
             .await
             .ok();

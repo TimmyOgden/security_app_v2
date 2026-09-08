@@ -20,6 +20,7 @@ pub fn ResultsPage() -> impl IntoView {
     let (search_query, set_search_query) = create_signal(String::new());
     let (show_log, set_show_log) = create_signal(false);
     let (_scan_completed, _set_scan_completed) = create_signal(false);
+    let (hide_dismissed, set_hide_dismissed) = create_signal(true);
 
     let advanced_mode = use_context::<ReadSignal<bool>>().unwrap_or_else(|| create_signal(false).0);
 
@@ -108,6 +109,10 @@ pub fn ResultsPage() -> impl IntoView {
         fetch_scores(id).await
     });
 
+    let diff = create_local_resource(scan_id, |id| async move {
+        fetch_diff(id).await
+    });
+
     // Reactive memo: combines findings resource with all filter signals so
     // any filter change reliably triggers a re-render without re-fetching.
     let filtered_findings = create_memo(move |_| {
@@ -116,6 +121,7 @@ pub fn ResultsPage() -> impl IntoView {
         let itype = issue_type_filter.get();
         let query = search_query.get().to_lowercase();
         let adv   = advanced_mode.get();
+        let hide_dismissed = hide_dismissed.get();
         findings.get()
             .and_then(|r| r.ok())
             .unwrap_or_default()
@@ -125,6 +131,7 @@ pub fn ResultsPage() -> impl IntoView {
                 (sev   == "all" || f.severity == sev) &&
                 (tool  == "all" || f.tool == tool) &&
                 (itype == "all" || f.issue_type.as_deref().unwrap_or("") == itype) &&
+                (!hide_dismissed || !matches!(f.triage_status.as_deref(), Some("false_positive") | Some("wont_fix"))) &&
                 (query.is_empty()
                     || f.title.to_lowercase().contains(&query)
                     || f.tool.to_lowercase().contains(&query)
@@ -334,6 +341,53 @@ pub fn ResultsPage() -> impl IntoView {
             })}
         </Suspense>
 
+        // Diff vs. the previous scan of the same target
+        <Suspense fallback=move || view! { <div></div> }>
+            {move || diff.get().map(|data| match data {
+                Ok(d) if d.compared_to_scan_id.is_some() => {
+                    let prev_id = d.compared_to_scan_id.unwrap();
+                    let prev_when = d.compared_to_started_at.clone().unwrap_or_default();
+                    view! {
+                        <div class="card mb-3">
+                            <h3>"Compared to previous scan"</h3>
+                            <p class="diff-meta">
+                                "vs " <a href=format!("/scans/{}", prev_id)>{format!("Scan #{}", prev_id)}</a>
+                                {format!(" ({})", prev_when)}
+                            </p>
+                            <div class="diff-summary">
+                                <span class="diff-stat diff-stat-new">{d.new_findings.len()} " new"</span>
+                                <span class="diff-stat diff-stat-resolved">{d.resolved_findings.len()} " resolved"</span>
+                                <span class="diff-stat diff-stat-unchanged">{d.unchanged_count} " unchanged"</span>
+                            </div>
+                            {(!d.new_findings.is_empty()).then(|| view! {
+                                <div class="diff-list">
+                                    <h4>"New since last scan"</h4>
+                                    <For each=move || d.new_findings.clone() key=|f| f.id children=|f| view! {
+                                        <div class="diff-item diff-item-new">
+                                            <SeverityBadge severity=f.severity.clone()/>
+                                            <span>{f.title.clone()}</span>
+                                        </div>
+                                    }/>
+                                </div>
+                            })}
+                            {(!d.resolved_findings.is_empty()).then(|| view! {
+                                <div class="diff-list">
+                                    <h4>"Resolved since last scan"</h4>
+                                    <For each=move || d.resolved_findings.clone() key=|f| f.id children=|f| view! {
+                                        <div class="diff-item diff-item-resolved">
+                                            <SeverityBadge severity=f.severity.clone()/>
+                                            <span>{f.title.clone()}</span>
+                                        </div>
+                                    }/>
+                                </div>
+                            })}
+                        </div>
+                    }.into_view()
+                }
+                _ => view! { <div></div> }.into_view(),
+            })}
+        </Suspense>
+
         // Stats cards
         {move || status_data.get().map(|s| view! {
             <div class="stats-grid">
@@ -378,6 +432,12 @@ pub fn ResultsPage() -> impl IntoView {
                     <input type="text" class="form-control filter-search"
                         placeholder="Search findings..."
                         on:input=move |ev| set_search_query.set(event_target_value(&ev))/>
+                    <label class="checkbox-label">
+                        <input type="checkbox"
+                            prop:checked=move || hide_dismissed.get()
+                            on:change=move |ev| set_hide_dismissed.set(event_target_checked(&ev))/>
+                        " Hide dismissed"
+                    </label>
                 </div>
             </div>
 
@@ -493,15 +553,28 @@ pub fn ResultsPage() -> impl IntoView {
                                 <For
                                     each=move || filtered_findings.get()
                                     key=|f| f.id
-                                    children=|finding| {
+                                    children=move |finding| {
                                         let cvss_class = finding.cvss_score.map(|v| {
                                             if v >= 9.0 { "cvss-critical" }
                                             else if v >= 7.0 { "cvss-high" }
                                             else if v >= 4.0 { "cvss-medium" }
                                             else { "cvss-low" }
                                         }).unwrap_or("");
+                                        let fid = finding.id;
+                                        let cur_triage = finding.triage_status.clone();
+                                        let is_dismissed = matches!(cur_triage.as_deref(), Some("false_positive") | Some("wont_fix"));
+                                        let do_triage = move |status: &'static str| {
+                                            move |_: leptos::ev::MouseEvent| {
+                                                #[cfg(feature = "hydrate")]
+                                                wasm_bindgen_futures::spawn_local(async move {
+                                                    let _ = post_triage(fid, status).await;
+                                                    findings.refetch();
+                                                });
+                                            }
+                                        };
                                         view! {
-                                            <div class=format!("finding-card finding-sev-{}", finding.severity)>
+                                            <div class=format!("finding-card finding-sev-{}{}", finding.severity,
+                                                if is_dismissed { " finding-dismissed" } else { "" })>
                                                 <div class="finding-card-header">
                                                     <SeverityBadge severity=finding.severity.clone()/>
                                                     <span class="finding-tool-badge">{finding.tool.clone()}</span>
@@ -533,6 +606,22 @@ pub fn ResultsPage() -> impl IntoView {
                                                     {finding.recommendation.clone().map(|rec| view! {
                                                         <span class="finding-rec">"💡 " {rec}</span>
                                                     })}
+                                                </div>
+                                                <div class="finding-triage">
+                                                    {match cur_triage.as_deref() {
+                                                        Some("false_positive") => view! { <span class="triage-badge triage-badge-false_positive">"False positive"</span> }.into_view(),
+                                                        Some("wont_fix") => view! { <span class="triage-badge triage-badge-wont_fix">"Won't fix"</span> }.into_view(),
+                                                        Some("confirmed") => view! { <span class="triage-badge triage-badge-confirmed">"Confirmed"</span> }.into_view(),
+                                                        _ => view! {}.into_view(),
+                                                    }}
+                                                    <div class="finding-triage-actions">
+                                                        <button class="btn-xs" on:click=do_triage("false_positive")>"Not a real issue"</button>
+                                                        <button class="btn-xs" on:click=do_triage("wont_fix")>"Won't fix"</button>
+                                                        <button class="btn-xs" on:click=do_triage("confirmed")>"Confirmed"</button>
+                                                        {(!matches!(cur_triage.as_deref(), None | Some("open"))).then(|| view! {
+                                                            <button class="btn-xs" on:click=do_triage("open")>"Reset"</button>
+                                                        })}
+                                                    </div>
                                                 </div>
                                             </div>
                                         }
@@ -667,6 +756,51 @@ async fn fetch_scores(id: i64) -> Result<ScanScoreResponse, String> {
     }
     #[cfg(not(feature = "hydrate"))]
     { let _ = id; Err("SSR".into()) }
+}
+
+async fn fetch_diff(id: i64) -> Result<ScanDiffResponse, String> {
+    #[cfg(feature = "hydrate")]
+    {
+        let resp = gloo_net::http::Request::get(&format!("/api/scans/{}/diff", id))
+            .send().await.map_err(|e| e.to_string())?;
+        let api: ApiResponse<ScanDiffResponse> = resp.json().await.map_err(|e| e.to_string())?;
+        api.data.ok_or("No data".into())
+    }
+    #[cfg(not(feature = "hydrate"))]
+    { let _ = id; Err("SSR".into()) }
+}
+
+#[allow(dead_code)]
+async fn post_triage(finding_id: i64, status: &str) -> Result<(), String> {
+    #[cfg(feature = "hydrate")]
+    {
+        let req = TriageRequest { status: status.to_string(), note: None };
+        let body = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+        let resp = gloo_net::http::Request::post(&format!("/api/findings/{}/triage", finding_id))
+            .header("Content-Type", "application/json")
+            .body(&body).map_err(|e| e.to_string())?
+            .send().await.map_err(|e| e.to_string())?;
+        let api: ApiResponse<()> = resp.json().await.map_err(|e| e.to_string())?;
+        if api.success { Ok(()) } else { Err(api.message.unwrap_or("Failed".into())) }
+    }
+    #[cfg(not(feature = "hydrate"))]
+    { let _ = (finding_id, status); Err("SSR".into()) }
+}
+
+fn event_target_checked(ev: &leptos::ev::Event) -> bool {
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::JsCast;
+        ev.target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            .map(|e: web_sys::HtmlInputElement| e.checked())
+            .unwrap_or(false)
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = ev;
+        false
+    }
 }
 
 #[allow(dead_code)]

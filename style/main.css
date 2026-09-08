@@ -1339,6 +1339,87 @@ h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.01em; }
     font-size: 12px;
 }
 
+/* ── Finding Triage ── */
+.finding-triage {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.triage-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.triage-badge-false_positive { background: rgba(124, 136, 150, 0.18); color: var(--info); }
+.triage-badge-wont_fix { background: rgba(224, 184, 74, 0.16); color: var(--medium); }
+.triage-badge-confirmed { background: rgba(240, 87, 107, 0.16); color: var(--critical); }
+
+.finding-triage-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-left: auto;
+}
+
+.finding-card.finding-dismissed {
+    opacity: 0.55;
+}
+
+/* ── Scan Diff ── */
+.diff-meta {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    margin-bottom: 14px;
+}
+
+.diff-meta a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.diff-meta a:hover { text-decoration: underline; }
+
+.diff-summary {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.diff-stat {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+}
+
+.diff-stat-new { background: rgba(240, 87, 107, 0.12); color: var(--critical); }
+.diff-stat-resolved { background: rgba(52, 211, 153, 0.12); color: var(--success); }
+.diff-stat-unchanged { background: var(--bg-input); color: var(--text-secondary); }
+
+.diff-list { margin-top: 18px; }
+.diff-list h4 { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 8px; }
+
+.diff-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    margin-bottom: 4px;
+    border-left: 3px solid transparent;
+}
+
+.diff-item-new { background: rgba(240, 87, 107, 0.06); border-left-color: var(--critical); }
+.diff-item-resolved { background: rgba(52, 211, 153, 0.06); border-left-color: var(--success); text-decoration: line-through; opacity: 0.8; }
+
 /* ── Collapsible Log ── */
 .log-header {
     display: flex;
