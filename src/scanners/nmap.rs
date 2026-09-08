@@ -1,5 +1,6 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
 use tokio::process::Command;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
@@ -13,13 +14,11 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
     db::insert_scan_log(pool, scan_job_id, "info", Some("nmap"),
         &format!("Running Nmap scan on {}", host)).await;
 
-    let output = Command::new("nmap")
-        .args(["-sV", "-sC", "--top-ports", "1000", "-oX", "-", &host])
-        .output()
-        .await;
+    let mut cmd = Command::new("nmap");
+    cmd.args(["-sV", "-sC", "--top-ports", "1000", "-oX", "-", &host]);
 
-    match output {
-        Ok(out) => {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -29,6 +28,11 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
             }
 
             parse_nmap_xml(&stdout)
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("nmap"),
+                "Nmap stopped — scan was cancelled").await;
+            vec![]
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("nmap"),

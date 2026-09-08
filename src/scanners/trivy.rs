@@ -1,5 +1,6 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
 use tokio::process::Command;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
@@ -12,20 +13,18 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
         "fs"
     };
 
-    let output = Command::new("trivy")
-        .args([
-            scan_type,
-            "--format", "json",
-            "--timeout", "30m",
-            "--scanners", "vuln,secret,misconfig",
-            "--skip-dirs", ".git",
-            target,
-        ])
-        .output()
-        .await;
+    let mut cmd = Command::new("trivy");
+    cmd.args([
+        scan_type,
+        "--format", "json",
+        "--timeout", "30m",
+        "--scanners", "vuln,secret,misconfig",
+        "--skip-dirs", ".git",
+        target,
+    ]);
 
-    match output {
-        Ok(out) => {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -47,6 +46,11 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
             }
 
             parse_trivy_json(&stdout)
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("trivy"),
+                "Trivy stopped — scan was cancelled").await;
+            vec![]
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("trivy"),

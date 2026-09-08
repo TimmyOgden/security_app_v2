@@ -127,6 +127,27 @@ pub async fn run_scan(pool: DbPool, scan_job_id: i64) {
     let tools = filter_tools(&requested_tools, &target_source, &target);
     let total = tools.len() as i64;
 
+    // A scan that resolves to zero compatible tools is a configuration
+    // mistake (usually a network/host target submitted without
+    // target_source="url"), not a successful scan of nothing — surface it
+    // as a failure instead of silently reporting "completed" with 0/0.
+    if total == 0 {
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        db::insert_scan_log(&pool, scan_job_id, "error", None,
+            &format!(
+                "❌ No compatible tools for target \"{}\" (target_source=\"{}\", requested: {}). \
+                 Network/host targets usually need target_source set to \"url\".",
+                target, target_source, requested_tools.join(", ")
+            )).await;
+        sqlx::query("UPDATE scan_jobs SET status = 'failed', completed_at = ?, tools_total = 0, tools_completed = 0 WHERE id = ?")
+            .bind(&now)
+            .bind(scan_job_id)
+            .execute(&pool)
+            .await
+            .ok();
+        return;
+    }
+
     // Update tools_total
     // Check which tools have already been run (for resume support)
     let completed_tools: Vec<String> = sqlx::query_as::<_, (String,)>(
@@ -208,6 +229,27 @@ pub async fn run_scan(pool: DbPool, scan_job_id: i64) {
             .ok();
 
         let findings = run_tool(&pool, scan_job_id, tool_name, &target, &target_source).await;
+
+        // The tool itself may have been killed mid-run by the cancellation
+        // flag (see scanners::process::run_cancellable and the poll loops in
+        // zap.rs/openvas.rs/sonarqube.rs) — if so, don't log a misleading
+        // "complete" and don't let the scan fall through to "completed".
+        if SCAN_CANCEL.read().await.get(&scan_job_id).copied().unwrap_or(false) {
+            db::insert_scan_log(&pool, scan_job_id, "warn", None,
+                "🛑 Scan stopped by user").await;
+
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            save_findings(&pool, scan_job_id, &tools, &now).await;
+
+            sqlx::query("UPDATE scan_jobs SET status = 'stopped', current_tool = NULL WHERE id = ?")
+                .bind(scan_job_id)
+                .execute(&pool)
+                .await
+                .ok();
+
+            SCAN_CANCEL.write().await.remove(&scan_job_id);
+            return;
+        }
 
         let count = findings.len();
 

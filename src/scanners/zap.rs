@@ -1,5 +1,6 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::runner::SCAN_CANCEL;
 
 /// How long to wait between status polls.
 const SPIDER_POLL_SECS: u64 = 2;
@@ -168,6 +169,12 @@ async fn wait_for_progress(
                     &format!("ZAP {} status request failed ({}) — treating as finished", module, e)).await;
                 return;
             }
+        }
+
+        if SCAN_CANCEL.read().await.get(&scan_job_id).copied().unwrap_or(false) {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("zap"),
+                &format!("ZAP {} stopped — scan was cancelled", module)).await;
+            return;
         }
 
         polls += 1;

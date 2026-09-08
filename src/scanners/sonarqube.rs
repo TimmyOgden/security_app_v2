@@ -1,5 +1,7 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
+use crate::scanners::runner::SCAN_CANCEL;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
     let sonar_url = db::get_setting(pool, "sonarqube_url").await;
@@ -82,13 +84,11 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
         let _ = tokio::fs::create_dir_all("/tmp/empty-sonar").await;
     }
 
-    let output = tokio::process::Command::new("sonar-scanner")
-        .args(&args)
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new("sonar-scanner");
+    cmd.args(&args);
 
-    match output {
-        Ok(out) => {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -110,7 +110,7 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
                 .and_then(|l| l.split("api/ce/task?id=").nth(1))
                 .map(|s| s.split_whitespace().next().unwrap_or(s).trim().to_string());
 
-            if !out.status.success() {
+            if !out.status_success {
                 db::insert_scan_log(pool, scan_job_id, "error", Some("sonarqube"),
                     &format!("sonar-scanner failed: {}", &stderr[..stderr.len().min(500)])).await;
                 return vec![];
@@ -127,6 +127,12 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(poll_interval)).await;
                 waited += poll_interval;
+
+                if SCAN_CANCEL.read().await.get(&scan_job_id).copied().unwrap_or(false) {
+                    db::insert_scan_log(pool, scan_job_id, "warn", Some("sonarqube"),
+                        "Stopped waiting for analysis — scan was cancelled").await;
+                    return vec![];
+                }
 
                 let done = if let Some(ref tid) = task_id {
                     // Poll the specific task
@@ -183,6 +189,11 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
 
             db::insert_scan_log(pool, scan_job_id, "info", Some("sonarqube"),
                 &format!("Analysis complete after ~{}s, fetching results", waited)).await;
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("sonarqube"),
+                "sonar-scanner stopped — scan was cancelled").await;
+            return vec![];
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("sonarqube"),

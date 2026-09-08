@@ -1,20 +1,24 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
 use tokio::process::Command;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
     db::insert_scan_log(pool, scan_job_id, "info", Some("bandit"),
         &format!("Running Bandit SAST on {}", target)).await;
 
-    let output = Command::new("bandit")
-        .args(["-r", target, "-f", "json", "-ll"])
-        .output()
-        .await;
+    let mut cmd = Command::new("bandit");
+    cmd.args(["-r", target, "-f", "json", "-ll"]);
 
-    match output {
-        Ok(out) => {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_bandit_json(&stdout)
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("bandit"),
+                "Bandit stopped — scan was cancelled").await;
+            vec![]
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("bandit"),

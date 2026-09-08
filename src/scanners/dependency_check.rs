@@ -1,5 +1,6 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
 use tokio::process::Command;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
@@ -10,28 +11,26 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
     let _ = tokio::fs::create_dir_all(&report_dir).await;
     let report_path = format!("{}/dependency-check-report.json", report_dir);
 
-    let output = Command::new("/opt/dependency-check/bin/dependency-check.sh")
-        .args([
-            "--scan", target,
-            "--format", "JSON",
-            "--out", &report_dir,
-            "--data", "/opt/dependency-check/data",
-            // Cargo/Rust (and several other ecosystem) analyzers are shipped
-            // disabled upstream unless this flag is set — without it, a Rust
-            // project's Cargo.lock is silently skipped entirely.
-            "--enableExperimental",
-            "--exclude", "**/node_modules/**",
-            "--exclude", "**/.git/**",
-            "--exclude", "**/venv/**",
-            "--exclude", "**/__pycache__/**",
-            "--exclude", "**/target/**",
-        ])
-        .output()
-        .await;
+    let mut cmd = Command::new("/opt/dependency-check/bin/dependency-check.sh");
+    cmd.args([
+        "--scan", target,
+        "--format", "JSON",
+        "--out", &report_dir,
+        "--data", "/opt/dependency-check/data",
+        // Cargo/Rust (and several other ecosystem) analyzers are shipped
+        // disabled upstream unless this flag is set — without it, a Rust
+        // project's Cargo.lock is silently skipped entirely.
+        "--enableExperimental",
+        "--exclude", "**/node_modules/**",
+        "--exclude", "**/.git/**",
+        "--exclude", "**/venv/**",
+        "--exclude", "**/__pycache__/**",
+        "--exclude", "**/target/**",
+    ]);
 
-    match output {
-        Ok(out) => {
-            if !out.status.success() {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
+            if !out.status_success {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 db::insert_scan_log(pool, scan_job_id, "warn", Some("dependency_check"),
                     &format!("Dependency-Check exited with warnings: {}", &stderr[..stderr.len().min(500)])).await;
@@ -46,6 +45,11 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
                     vec![]
                 }
             }
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("dependency_check"),
+                "Dependency-Check stopped — scan was cancelled").await;
+            vec![]
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("dependency_check"),

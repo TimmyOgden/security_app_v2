@@ -1,5 +1,6 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::runner::SCAN_CANCEL;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -100,6 +101,12 @@ pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFind
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         poll_count += 1;
+
+        if SCAN_CANCEL.read().await.get(&scan_job_id).copied().unwrap_or(false) {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("openvas"),
+                "Scan was cancelled — stopping the OpenVAS task and collecting partial results").await;
+            break;
+        }
 
         let status = match get_task_status(&client, &url, &token, &task_id).await {
             Ok(s) => s,

@@ -1,20 +1,24 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
 use tokio::process::Command;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
     db::insert_scan_log(pool, scan_job_id, "info", Some("nikto"),
         &format!("Running Nikto scan on {}", target)).await;
 
-    let output = Command::new("nikto")
-        .args(["-h", target, "-Format", "json", "-output", "-"])
-        .output()
-        .await;
+    let mut cmd = Command::new("nikto");
+    cmd.args(["-h", target, "-Format", "json", "-output", "-"]);
 
-    match output {
-        Ok(out) => {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_nikto_output(&stdout)
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("nikto"),
+                "Nikto stopped — scan was cancelled").await;
+            vec![]
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("nikto"),

@@ -1,22 +1,26 @@
 use crate::db::{self, DbPool};
 use crate::models::ToolFinding;
+use crate::scanners::process::run_cancellable;
 use tokio::process::Command;
 
 pub async fn scan(pool: &DbPool, scan_job_id: i64, target: &str) -> Vec<ToolFinding> {
     db::insert_scan_log(pool, scan_job_id, "info", Some("sqlmap"),
         &format!("Running SQLMap scan on {}", target)).await;
 
-    let output = Command::new("sqlmap")
-        .args(["-u", target, "--batch", "--level=1", "--risk=1", "--forms", "--crawl=2", "--output-dir=/tmp/sqlmap"])
-        .output()
-        .await;
+    let mut cmd = Command::new("sqlmap");
+    cmd.args(["-u", target, "--batch", "--level=1", "--risk=1", "--forms", "--crawl=2", "--output-dir=/tmp/sqlmap"]);
 
-    match output {
-        Ok(out) => {
+    match run_cancellable(cmd, scan_job_id).await {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             db::insert_scan_log(pool, scan_job_id, "info", Some("sqlmap"),
                 &format!("SQLMap output: {} bytes", stdout.len())).await;
             parse_sqlmap_output(&stdout)
+        }
+        Ok(None) => {
+            db::insert_scan_log(pool, scan_job_id, "warn", Some("sqlmap"),
+                "SQLMap stopped — scan was cancelled").await;
+            vec![]
         }
         Err(e) => {
             db::insert_scan_log(pool, scan_job_id, "error", Some("sqlmap"),
