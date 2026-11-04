@@ -7,6 +7,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
             .route("/dashboard", web::get().to(dashboard))
+            .route("/overview", web::get().to(overview))
+            .route("/runs", web::get().to(list_runs))
             .route("/scans", web::get().to(list_scans))
             .route("/scans/{id}", web::get().to(get_scan))
             .route("/scans/{id}/status", web::get().to(scan_status))
@@ -1179,7 +1181,7 @@ async fn fetch_scan_job(pool: &DbPool, id: i64) -> Option<ScanJob> {
 const FINDING_SELECT: &str = "SELECT f.id, f.scan_job_id, f.tool, f.severity, f.title, f.description, f.file_path, f.line_number,
                 f.cwe_id, f.cvss_score, f.raw_output, f.recommendation,
                 f.text_range_start, f.text_range_end, f.status, f.author, f.rule_url, f.data_flow, f.issue_type,
-                f.fingerprint, t.triage_status, t.note as triage_note
+                f.fingerprint, t.triage_status, t.note as triage_note, f.found_at
          FROM findings f
          JOIN scan_jobs s ON s.id = f.scan_job_id
          LEFT JOIN finding_triage t ON t.target = s.target AND t.fingerprint = f.fingerprint";
@@ -1195,4 +1197,250 @@ async fn fetch_findings(pool: &DbPool, scan_job_id: i64) -> Vec<Finding> {
         .fetch_all(pool)
         .await
         .unwrap_or_default()
+}
+
+// ── Runs list and Overview ──
+
+const TS_FMT: &str = "%Y-%m-%d %H:%M:%S";
+
+fn parse_ts(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDateTime::parse_from_str(s, TS_FMT).ok()
+}
+
+fn is_live(status: &str) -> bool {
+    matches!(status, "running" | "pending")
+}
+
+/// Turns scan jobs into Runs-list rows, placing each finding on the run's
+/// timeline. Findings with `found_at` sit at their real time; older rows
+/// without it are spread across their tool's slot in `tools_run`.
+async fn build_run_rows(pool: &DbPool, jobs: &[ScanJob]) -> Vec<RunRow> {
+    let now = chrono::Utc::now().naive_utc();
+    let mut rows = Vec::with_capacity(jobs.len());
+
+    for job in jobs {
+        let started = parse_ts(&job.started_at);
+        let live = is_live(&job.status);
+        let elapsed = if live {
+            started.map(|s| (now - s).num_seconds().max(0)).unwrap_or(0)
+        } else {
+            job.duration_seconds
+                .or_else(|| match (started, job.completed_at.as_deref().and_then(parse_ts)) {
+                    (Some(s), Some(c)) => Some((c - s).num_seconds().max(0)),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
+
+        let total = job.tools_total.unwrap_or(0).max(0);
+        let done = job.tools_completed.unwrap_or(0).max(0);
+        let progress = if live {
+            if total > 0 { ((done as f64 + 0.5) / total as f64).min(0.98) } else { 0.02 }
+        } else if job.status == "stopped" && total > 0 {
+            (done as f64 / total as f64).max(0.05)
+        } else if job.status == "failed" {
+            0.05
+        } else {
+            1.0
+        };
+
+        let found: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT severity, tool, found_at FROM findings WHERE scan_job_id = ? ORDER BY id",
+        )
+        .bind(job.id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let tools: Vec<String> = job.tools_run.as_deref().unwrap_or("")
+            .split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+        let slots = tools.len().max(1) as f64;
+        let mut per_tool: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+        for (_, tool, _) in &found {
+            per_tool.entry(tool.clone()).or_insert((0, 0)).1 += 1;
+        }
+
+        let mut marks = Vec::with_capacity(found.len());
+        for (i, (severity, tool, found_at)) in found.iter().enumerate() {
+            let timed = match (started, found_at.as_deref().and_then(parse_ts)) {
+                (Some(s), Some(f)) if elapsed > 0 => Some(((f - s).num_seconds() as f64 / elapsed as f64).clamp(0.0, 1.0) * progress),
+                _ => None,
+            };
+            let pos = timed.unwrap_or_else(|| {
+                let entry = per_tool.get_mut(tool).expect("tool counted above");
+                entry.0 += 1;
+                let (j, m) = (entry.0 as f64, entry.1 as f64);
+                match tools.iter().position(|t| t == tool) {
+                    Some(k) => (k as f64 + j / (m + 1.0)) / slots * if live { 1.0 } else { progress },
+                    None => (i as f64 + 1.0) / (found.len() as f64 + 1.0) * progress,
+                }
+            });
+            marks.push(TraceMark { pos: pos.clamp(0.0, 1.0), severity: severity.clone() });
+        }
+
+        let completed = job.status == "completed";
+        let score = completed.then(|| compute_score(job.critical_count, job.high_count, job.medium_count, job.low_count, job.info_count));
+        rows.push(RunRow {
+            id: job.id,
+            scan_type: job.scan_type.clone(),
+            target: job.target.clone(),
+            status: job.status.clone(),
+            started_at: job.started_at.clone(),
+            duration_seconds: job.duration_seconds,
+            elapsed_seconds: elapsed,
+            progress,
+            current_tool: job.current_tool.clone(),
+            tools_total: job.tools_total,
+            tools_completed: job.tools_completed,
+            critical: job.critical_count,
+            high: job.high_count,
+            other: job.medium_count + job.low_count + job.info_count,
+            score,
+            grade: score.map(score_to_grade),
+            has_pdf: completed,
+            marks,
+        });
+    }
+    rows
+}
+
+async fn list_runs(pool: web::Data<DbPool>) -> HttpResponse {
+    let jobs = fetch_scan_jobs(pool.get_ref(), None).await;
+    let rows = build_run_rows(pool.get_ref(), &jobs).await;
+    HttpResponse::Ok().json(ApiResponse { success: true, message: None, data: Some(rows) })
+}
+
+async fn overview(pool: web::Data<DbPool>) -> HttpResponse {
+    let pool = pool.get_ref();
+    let jobs = fetch_scan_jobs(pool, None).await; // newest first
+
+    let live_jobs: Vec<ScanJob> = jobs.iter().filter(|j| is_live(&j.status)).cloned().collect();
+    let live = build_run_rows(pool, &live_jobs).await;
+
+    // Targets in order of their most recent run.
+    let mut order: Vec<String> = Vec::new();
+    for j in &jobs {
+        if !order.contains(&j.target) { order.push(j.target.clone()); }
+    }
+
+    let schedules: Vec<(String, i64, bool)> = sqlx::query_as(
+        "SELECT target, interval_hours, enabled FROM scheduled_scans ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut targets = Vec::new();
+    let mut attention: Vec<AttentionItem> = Vec::new();
+
+    for target in &order {
+        let mut runs: Vec<&ScanJob> = jobs.iter().filter(|j| &j.target == target).collect();
+        runs.reverse(); // oldest first
+        let latest = runs.last().copied().expect("target came from a job");
+        let completed: Vec<&&ScanJob> = runs.iter().filter(|j| j.status == "completed").collect();
+        let score_of = |j: &ScanJob| compute_score(j.critical_count, j.high_count, j.medium_count, j.low_count, j.info_count);
+        let score = completed.last().map(|j| score_of(j));
+        let previous_score = completed.iter().rev().nth(1).map(|j| score_of(j));
+        let schedule = schedules.iter().find(|s| &s.0 == target).map(|s| {
+            if !s.2 { "paused".to_string() }
+            else if s.1 % 168 == 0 { if s.1 == 168 { "weekly".into() } else { format!("every {} weeks", s.1 / 168) } }
+            else if s.1 % 24 == 0 { if s.1 == 24 { "daily".into() } else { format!("every {} days", s.1 / 24) } }
+            else { format!("every {}h", s.1) }
+        });
+        targets.push(TargetSummary {
+            target: target.clone(),
+            target_source: latest.target_source.clone(),
+            latest_scan_id: latest.id,
+            latest_status: latest.status.clone(),
+            runs: runs.iter().rev().take(8).rev().map(|j| RunCounts {
+                id: j.id,
+                status: j.status.clone(),
+                critical: j.critical_count,
+                high: j.high_count,
+                other: j.medium_count + j.low_count + j.info_count,
+            }).collect(),
+            score,
+            grade: score.map(score_to_grade),
+            previous_score,
+            schedule,
+        });
+
+        // The run whose findings count as "open" for this target: the newest
+        // one that is in progress or finished cleanly.
+        let current = runs.iter().rev().find(|j| is_live(&j.status) || j.status == "completed");
+        let Some(current) = current else { continue };
+        let previous_fps: std::collections::HashSet<String> = match runs.iter().rev()
+            .find(|j| j.id < current.id && j.status == "completed")
+        {
+            Some(prev) => fetch_findings(pool, prev.id).await.into_iter().filter_map(|f| f.fingerprint).collect(),
+            None => Default::default(),
+        };
+        let has_previous = runs.iter().any(|j| j.id < current.id && j.status == "completed");
+
+        for f in fetch_findings(pool, current.id).await {
+            if !matches!(f.severity.as_str(), "critical" | "high") { continue; }
+            if matches!(f.triage_status.as_deref(), Some("false_positive") | Some("wont_fix")) { continue; }
+            let first_seen: Option<String> = match f.fingerprint.as_deref() {
+                Some(fp) => sqlx::query_scalar(
+                    "SELECT MIN(s.started_at) FROM findings f JOIN scan_jobs s ON s.id = f.scan_job_id
+                     WHERE s.target = ? AND f.fingerprint = ?",
+                )
+                .bind(target)
+                .bind(fp)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(None),
+                None => None,
+            };
+            attention.push(AttentionItem {
+                id: f.id,
+                scan_id: current.id,
+                target: target.clone(),
+                tool: f.tool.clone(),
+                severity: f.severity.clone(),
+                title: f.title.clone(),
+                first_seen,
+                live: is_live(&current.status),
+                new: has_previous && f.fingerprint.as_ref().map(|fp| !previous_fps.contains(fp)).unwrap_or(true),
+                confirmed: f.triage_status.as_deref() == Some("confirmed"),
+            });
+        }
+    }
+
+    attention.sort_by(|a, b| {
+        let rank = |s: &str| if s == "critical" { 0 } else { 1 };
+        rank(&a.severity).cmp(&rank(&b.severity)).then(a.first_seen.cmp(&b.first_seen))
+    });
+
+    let critical_open = attention.iter().filter(|a| a.severity == "critical").count() as i64;
+    let mut critical_targets: Vec<&str> = attention.iter().filter(|a| a.severity == "critical").map(|a| a.target.as_str()).collect();
+    critical_targets.sort();
+    critical_targets.dedup();
+    let high_open = attention.iter().filter(|a| a.severity == "high").count() as i64;
+
+    let next_runs: Vec<NextRun> = sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT target, scan_type, next_run_at, interval_hours FROM scheduled_scans
+         WHERE enabled = 1 ORDER BY next_run_at LIMIT 3",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(target, scan_type, next_run_at, interval_hours)| NextRun { target, scan_type, next_run_at, interval_hours })
+    .collect();
+
+    HttpResponse::Ok().json(ApiResponse {
+        success: true,
+        message: None,
+        data: Some(OverviewData {
+            critical_open,
+            critical_targets: critical_targets.len() as i64,
+            high_open,
+            live,
+            attention,
+            targets,
+            next_runs,
+            now: chrono::Utc::now().format(TS_FMT).to_string(),
+        }),
+    })
 }

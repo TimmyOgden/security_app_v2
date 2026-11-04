@@ -1,6 +1,6 @@
-pub mod dashboard;
+pub mod overview;
+pub mod runs;
 pub mod scan;
-pub mod scans;
 pub mod results;
 pub mod tools;
 pub mod settings;
@@ -8,9 +8,9 @@ pub mod reports;
 pub mod schedules;
 pub mod welcome;
 
-pub use dashboard::DashboardPage;
+pub use overview::OverviewPage;
+pub use runs::RunsPage;
 pub use scan::ScanPage;
-pub use scans::ScansPage;
 pub use results::ResultsPage;
 pub use tools::ToolsPage;
 pub use settings::SettingsPage;
