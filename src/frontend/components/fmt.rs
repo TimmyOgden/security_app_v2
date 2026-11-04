@@ -89,3 +89,61 @@ pub fn sev_label(severity: &str) -> &'static str {
         _ => "Info",
     }
 }
+
+/// Percent-encodes a value for a URL query string.
+pub fn encode(value: &str) -> String {
+    value.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        _ => format!("%{:02X}", b),
+    }).collect()
+}
+
+/// "Source folder" or "Web target", from a run's target_source.
+pub fn target_kind(source: &str) -> &'static str {
+    match source {
+        "url" => "Web target",
+        "azure" => "Azure DevOps repository",
+        _ => "Source folder",
+    }
+}
+
+/// UTC calendar fields for a time in ms: (month 1-12, day, weekday 0=Sun, hour, minute).
+pub fn civil(ms: f64) -> (u32, u32, u32, u32, u32) {
+    let days = (ms / 86_400_000.0).floor() as i64;
+    let secs = ((ms / 1000.0).floor() as i64).rem_euclid(86_400);
+    let weekday = ((days % 7 + 7) % 7 + 4) % 7;
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (month, day, weekday as u32, (secs / 3600) as u32, ((secs % 3600) / 60) as u32)
+}
+
+pub fn weekday_name(weekday: u32) -> &'static str {
+    ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday as usize % 7]
+}
+
+/// "Wed 09:05" for a time in ms (UTC); empty if unknown.
+pub fn day_time(ms: f64) -> String {
+    if ms.is_nan() || ms <= 0.0 {
+        return String::new();
+    }
+    let (_, _, wd, h, m) = civil(ms);
+    format!("{} {:02}:{:02}", weekday_name(wd), h, m)
+}
+
+/// "every 6h", "daily", "every 3 days", "weekly".
+pub fn cadence(hours: i64) -> String {
+    match hours {
+        24 => "daily".into(),
+        168 => "weekly".into(),
+        h if h % 168 == 0 => format!("every {} weeks", h / 168),
+        h if h % 24 == 0 => format!("every {} days", h / 24),
+        h => format!("every {}h", h),
+    }
+}

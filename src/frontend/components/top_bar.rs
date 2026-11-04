@@ -119,6 +119,7 @@ pub fn TopBar() -> impl IntoView {
                 <nav class="topnav" aria-label="Primary">
                     <A href="/" exact=true>"Overview"</A>
                     <A href="/runs">"Runs"</A>
+                    <A href="/targets">"Targets"</A>
                     <A href="/schedules">"Schedules"</A>
                     <A href="/tools">"Tools"</A>
                     <A href="/settings">"Settings"</A>

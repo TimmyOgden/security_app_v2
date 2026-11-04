@@ -1,5 +1,6 @@
 pub mod overview;
 pub mod runs;
+pub mod targets;
 pub mod scan;
 pub mod results;
 pub mod tools;
@@ -10,6 +11,7 @@ pub mod welcome;
 
 pub use overview::OverviewPage;
 pub use runs::RunsPage;
+pub use targets::TargetsPage;
 pub use scan::ScanPage;
 pub use results::ResultsPage;
 pub use tools::ToolsPage;

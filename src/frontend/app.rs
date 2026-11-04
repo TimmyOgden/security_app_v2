@@ -76,6 +76,7 @@ pub fn App() -> impl IntoView {
                         <Route path="/" view=OverviewPage/>
                         <Route path="/runs" view=RunsPage/>
                         <Route path="/runs/:id" view=ResultsPage/>
+                        <Route path="/targets" view=TargetsPage/>
                         <Route path="/scan" view=ScanPage/>
                         // Old paths, kept so bookmarks and report links still resolve.
                         <Route path="/scans" view=RunsPage/>

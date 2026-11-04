@@ -9,6 +9,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/dashboard", web::get().to(dashboard))
             .route("/overview", web::get().to(overview))
             .route("/runs", web::get().to(list_runs))
+            .route("/runs/{id}", web::get().to(run_detail))
+            .route("/targets", web::get().to(list_targets))
+            .route("/targets/detail", web::get().to(target_detail))
             .route("/scans", web::get().to(list_scans))
             .route("/scans/{id}", web::get().to(get_scan))
             .route("/scans/{id}/status", web::get().to(scan_status))
@@ -1244,8 +1247,8 @@ async fn build_run_rows(pool: &DbPool, jobs: &[ScanJob]) -> Vec<RunRow> {
             1.0
         };
 
-        let found: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT severity, tool, found_at FROM findings WHERE scan_job_id = ? ORDER BY id",
+        let found: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, severity, tool, found_at FROM findings WHERE scan_job_id = ? ORDER BY id",
         )
         .bind(job.id)
         .fetch_all(pool)
@@ -1256,12 +1259,12 @@ async fn build_run_rows(pool: &DbPool, jobs: &[ScanJob]) -> Vec<RunRow> {
             .split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
         let slots = tools.len().max(1) as f64;
         let mut per_tool: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
-        for (_, tool, _) in &found {
+        for (_, _, tool, _) in &found {
             per_tool.entry(tool.clone()).or_insert((0, 0)).1 += 1;
         }
 
         let mut marks = Vec::with_capacity(found.len());
-        for (i, (severity, tool, found_at)) in found.iter().enumerate() {
+        for (i, (finding_id, severity, tool, found_at)) in found.iter().enumerate() {
             let timed = match (started, found_at.as_deref().and_then(parse_ts)) {
                 (Some(s), Some(f)) if elapsed > 0 => Some(((f - s).num_seconds() as f64 / elapsed as f64).clamp(0.0, 1.0) * progress),
                 _ => None,
@@ -1275,7 +1278,7 @@ async fn build_run_rows(pool: &DbPool, jobs: &[ScanJob]) -> Vec<RunRow> {
                     None => (i as f64 + 1.0) / (found.len() as f64 + 1.0) * progress,
                 }
             });
-            marks.push(TraceMark { pos: pos.clamp(0.0, 1.0), severity: severity.clone() });
+            marks.push(TraceMark { pos: pos.clamp(0.0, 1.0), severity: severity.clone(), id: *finding_id, tool: tool.clone() });
         }
 
         let completed = job.status == "completed";
@@ -1323,88 +1326,15 @@ async fn overview(pool: web::Data<DbPool>) -> HttpResponse {
         if !order.contains(&j.target) { order.push(j.target.clone()); }
     }
 
-    let schedules: Vec<(String, i64, bool)> = sqlx::query_as(
-        "SELECT target, interval_hours, enabled FROM scheduled_scans ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let schedules = load_schedules(pool).await;
 
     let mut targets = Vec::new();
     let mut attention: Vec<AttentionItem> = Vec::new();
 
     for target in &order {
-        let mut runs: Vec<&ScanJob> = jobs.iter().filter(|j| &j.target == target).collect();
-        runs.reverse(); // oldest first
-        let latest = runs.last().copied().expect("target came from a job");
-        let completed: Vec<&&ScanJob> = runs.iter().filter(|j| j.status == "completed").collect();
-        let score_of = |j: &ScanJob| compute_score(j.critical_count, j.high_count, j.medium_count, j.low_count, j.info_count);
-        let score = completed.last().map(|j| score_of(j));
-        let previous_score = completed.iter().rev().nth(1).map(|j| score_of(j));
-        let schedule = schedules.iter().find(|s| &s.0 == target).map(|s| {
-            if !s.2 { "paused".to_string() }
-            else if s.1 % 168 == 0 { if s.1 == 168 { "weekly".into() } else { format!("every {} weeks", s.1 / 168) } }
-            else if s.1 % 24 == 0 { if s.1 == 24 { "daily".into() } else { format!("every {} days", s.1 / 24) } }
-            else { format!("every {}h", s.1) }
-        });
-        targets.push(TargetSummary {
-            target: target.clone(),
-            target_source: latest.target_source.clone(),
-            latest_scan_id: latest.id,
-            latest_status: latest.status.clone(),
-            runs: runs.iter().rev().take(8).rev().map(|j| RunCounts {
-                id: j.id,
-                status: j.status.clone(),
-                critical: j.critical_count,
-                high: j.high_count,
-                other: j.medium_count + j.low_count + j.info_count,
-            }).collect(),
-            score,
-            grade: score.map(score_to_grade),
-            previous_score,
-            schedule,
-        });
-
-        // The run whose findings count as "open" for this target: the newest
-        // one that is in progress or finished cleanly.
-        let current = runs.iter().rev().find(|j| is_live(&j.status) || j.status == "completed");
-        let Some(current) = current else { continue };
-        let previous_fps: std::collections::HashSet<String> = match runs.iter().rev()
-            .find(|j| j.id < current.id && j.status == "completed")
-        {
-            Some(prev) => fetch_findings(pool, prev.id).await.into_iter().filter_map(|f| f.fingerprint).collect(),
-            None => Default::default(),
-        };
-        let has_previous = runs.iter().any(|j| j.id < current.id && j.status == "completed");
-
-        for f in fetch_findings(pool, current.id).await {
-            if !matches!(f.severity.as_str(), "critical" | "high") { continue; }
-            if matches!(f.triage_status.as_deref(), Some("false_positive") | Some("wont_fix")) { continue; }
-            let first_seen: Option<String> = match f.fingerprint.as_deref() {
-                Some(fp) => sqlx::query_scalar(
-                    "SELECT MIN(s.started_at) FROM findings f JOIN scan_jobs s ON s.id = f.scan_job_id
-                     WHERE s.target = ? AND f.fingerprint = ?",
-                )
-                .bind(target)
-                .bind(fp)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(None),
-                None => None,
-            };
-            attention.push(AttentionItem {
-                id: f.id,
-                scan_id: current.id,
-                target: target.clone(),
-                tool: f.tool.clone(),
-                severity: f.severity.clone(),
-                title: f.title.clone(),
-                first_seen,
-                live: is_live(&current.status),
-                new: has_previous && f.fingerprint.as_ref().map(|fp| !previous_fps.contains(fp)).unwrap_or(true),
-                confirmed: f.triage_status.as_deref() == Some("confirmed"),
-            });
-        }
+        let runs = runs_of(&jobs, target);
+        targets.push(target_summary(target, &runs, &schedules));
+        attention.extend(open_findings(pool, target, &runs, &["critical", "high"]).await);
     }
 
     attention.sort_by(|a, b| {
@@ -1441,6 +1371,310 @@ async fn overview(pool: web::Data<DbPool>) -> HttpResponse {
             targets,
             next_runs,
             now: chrono::Utc::now().format(TS_FMT).to_string(),
+        }),
+    })
+}
+
+/// One run with its tool lanes and the previous completed run of the same
+/// target, for the run page's trace.
+async fn run_detail(pool: web::Data<DbPool>, path: web::Path<i64>) -> HttpResponse {
+    let pool = pool.get_ref();
+    let id = path.into_inner();
+    let Some(job) = fetch_scan_job(pool, id).await else {
+        return HttpResponse::NotFound().json(ApiResponse::<()> { success: false, message: Some("Run not found".into()), data: None });
+    };
+    let Some(run) = build_run_rows(pool, std::slice::from_ref(&job)).await.into_iter().next() else {
+        return HttpResponse::InternalServerError().finish();
+    };
+
+    let logs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT timestamp, tool FROM scan_logs WHERE scan_job_id = ? AND tool IS NOT NULL ORDER BY id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut tools: Vec<String> = job.tools_run.as_deref().unwrap_or("")
+        .split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+    if tools.is_empty() {
+        for (_, tool) in &logs {
+            if !tools.contains(tool) { tools.push(tool.clone()); }
+        }
+    }
+
+    let live = is_live(&job.status);
+    let done_count = job.tools_completed.unwrap_or(0).max(0) as usize;
+    let started = parse_ts(&job.started_at);
+    let now = chrono::Utc::now().naive_utc();
+    let to_pos = |ts: &str| -> Option<f64> {
+        match (started, parse_ts(ts)) {
+            (Some(s), Some(t)) if run.elapsed_seconds > 0 => {
+                Some(((t - s).num_seconds() as f64 / run.elapsed_seconds as f64).clamp(0.0, 1.0) * run.progress)
+            }
+            _ => None,
+        }
+    };
+
+    let n = tools.len().max(1) as f64;
+    let mut lanes: Vec<Lane> = tools.iter().enumerate().map(|(k, tool)| {
+        let state = if job.status == "completed" || k < done_count {
+            "done"
+        } else if live && k == done_count {
+            "active"
+        } else {
+            "pending"
+        };
+        let first = logs.iter().find(|(_, t)| t == tool).map(|(ts, _)| ts.clone());
+        let last = logs.iter().rev().find(|(_, t)| t == tool).map(|(ts, _)| ts.clone());
+        let seconds = match (first.as_deref().and_then(parse_ts), state) {
+            (Some(f), "done") => last.as_deref().and_then(parse_ts).map(|l| (l - f).num_seconds().max(0)),
+            (Some(f), "active") => Some((now - f).num_seconds().max(0)),
+            _ => None,
+        };
+        let start = first.as_deref().and_then(to_pos).unwrap_or(k as f64 / n);
+        let end = match state {
+            "done" => last.as_deref().and_then(to_pos).unwrap_or((k as f64 + 1.0) / n),
+            "active" => run.progress,
+            _ => (k as f64 + 1.0) / n,
+        };
+        Lane {
+            tool: tool.clone(),
+            start,
+            end,
+            state: state.to_string(),
+            findings: run.marks.iter().filter(|m| &m.tool == tool).count() as i64,
+            seconds,
+        }
+    }).collect();
+
+    // Runs recorded before tool logs existed get equal slots; pending tools
+    // share whatever is left after the head.
+    let timed = lanes.iter().filter(|l| l.state != "pending").all(|l| logs.iter().any(|(_, t)| t == &l.tool));
+    if !timed {
+        for (k, lane) in lanes.iter_mut().enumerate() {
+            lane.start = k as f64 / n;
+            lane.end = (k as f64 + 1.0) / n;
+        }
+    } else {
+        let from = lanes.iter().filter(|l| l.state != "pending").map(|l| l.end).fold(0.0_f64, f64::max);
+        let pending = lanes.iter().filter(|l| l.state == "pending").count();
+        if pending > 0 {
+            let width = (1.0 - from) / pending as f64;
+            for (i, lane) in lanes.iter_mut().filter(|l| l.state == "pending").enumerate() {
+                lane.start = from + width * i as f64;
+                lane.end = from + width * (i as f64 + 1.0);
+            }
+        }
+    }
+
+    let previous_id: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM scan_jobs WHERE target = ? AND id < ? AND status = 'completed' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&job.target)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+    let previous_job = match previous_id {
+        Some(pid) => fetch_scan_job(pool, pid).await,
+        None => None,
+    };
+    let previous = match previous_job {
+        Some(p) => {
+            let marks = build_run_rows(pool, std::slice::from_ref(&p)).await.into_iter().next().map(|r| r.marks).unwrap_or_default();
+            let score = compute_score(p.critical_count, p.high_count, p.medium_count, p.low_count, p.info_count);
+            Some(PreviousRun {
+                id: p.id,
+                started_at: p.started_at.clone(),
+                score,
+                grade: score_to_grade(score),
+                counts: [p.critical_count, p.high_count, p.medium_count, p.low_count, p.info_count],
+                marks,
+            })
+        }
+        None => None,
+    };
+
+    HttpResponse::Ok().json(ApiResponse {
+        success: true,
+        message: None,
+        data: Some(RunDetail {
+            target_source: job.target_source.clone(),
+            tools,
+            counts: [job.critical_count, job.high_count, job.medium_count, job.low_count, job.info_count],
+            lanes,
+            previous,
+            run,
+        }),
+    })
+}
+
+// ── Targets ──
+
+type ScheduleRow = (String, i64, bool);
+
+async fn load_schedules(pool: &DbPool) -> Vec<ScheduleRow> {
+    sqlx::query_as("SELECT target, interval_hours, enabled FROM scheduled_scans ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+}
+
+fn cadence(hours: i64) -> String {
+    match hours {
+        168 => "weekly".into(),
+        h if h % 168 == 0 => format!("every {} weeks", h / 168),
+        24 => "daily".into(),
+        h if h % 24 == 0 => format!("every {} days", h / 24),
+        h => format!("every {}h", h),
+    }
+}
+
+/// A target's runs, oldest first.
+fn runs_of<'a>(jobs: &'a [ScanJob], target: &str) -> Vec<&'a ScanJob> {
+    let mut runs: Vec<&ScanJob> = jobs.iter().filter(|j| j.target == target).collect();
+    runs.sort_by_key(|j| j.id);
+    runs
+}
+
+fn score_of(j: &ScanJob) -> i64 {
+    compute_score(j.critical_count, j.high_count, j.medium_count, j.low_count, j.info_count)
+}
+
+fn target_summary(target: &str, runs: &[&ScanJob], schedules: &[ScheduleRow]) -> TargetSummary {
+    let latest = runs.last().copied();
+    let completed: Vec<&ScanJob> = runs.iter().copied().filter(|j| j.status == "completed").collect();
+    let score = completed.last().map(|j| score_of(j));
+    TargetSummary {
+        target: target.to_string(),
+        target_source: latest.map(|j| j.target_source.clone()).unwrap_or_default(),
+        latest_scan_id: latest.map(|j| j.id).unwrap_or(0),
+        latest_status: latest.map(|j| j.status.clone()).unwrap_or_default(),
+        runs: runs.iter().rev().take(8).rev().map(|j| RunCounts {
+            id: j.id,
+            status: j.status.clone(),
+            critical: j.critical_count,
+            high: j.high_count,
+            other: j.medium_count + j.low_count + j.info_count,
+        }).collect(),
+        score,
+        grade: score.map(score_to_grade),
+        previous_score: completed.iter().rev().nth(1).map(|j| score_of(j)),
+        schedule: schedules.iter().find(|s| s.0 == target).map(|s| if s.2 { cadence(s.1) } else { "paused".into() }),
+    }
+}
+
+/// Untriaged findings of the given severities from the target's current run
+/// (the newest one in progress or finished cleanly).
+async fn open_findings(pool: &DbPool, target: &str, runs: &[&ScanJob], severities: &[&str]) -> Vec<AttentionItem> {
+    let Some(current) = runs.iter().rev().find(|j| is_live(&j.status) || j.status == "completed") else {
+        return Vec::new();
+    };
+    let previous = runs.iter().rev().find(|j| j.id < current.id && j.status == "completed");
+    let previous_fps: std::collections::HashSet<String> = match previous {
+        Some(prev) => fetch_findings(pool, prev.id).await.into_iter().filter_map(|f| f.fingerprint).collect(),
+        None => Default::default(),
+    };
+
+    let mut out = Vec::new();
+    for f in fetch_findings(pool, current.id).await {
+        if !severities.contains(&f.severity.as_str()) { continue; }
+        if matches!(f.triage_status.as_deref(), Some("false_positive") | Some("wont_fix")) { continue; }
+        let first_seen: Option<String> = match f.fingerprint.as_deref() {
+            Some(fp) => sqlx::query_scalar(
+                "SELECT MIN(s.started_at) FROM findings f JOIN scan_jobs s ON s.id = f.scan_job_id
+                 WHERE s.target = ? AND f.fingerprint = ?",
+            )
+            .bind(target)
+            .bind(fp)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None),
+            None => None,
+        };
+        out.push(AttentionItem {
+            id: f.id,
+            scan_id: current.id,
+            target: target.to_string(),
+            tool: f.tool.clone(),
+            severity: f.severity.clone(),
+            title: f.title.clone(),
+            first_seen,
+            live: is_live(&current.status),
+            new: previous.is_some() && f.fingerprint.as_ref().map(|fp| !previous_fps.contains(fp)).unwrap_or(true),
+            confirmed: f.triage_status.as_deref() == Some("confirmed"),
+        });
+    }
+    out
+}
+
+async fn list_targets(pool: web::Data<DbPool>) -> HttpResponse {
+    let pool = pool.get_ref();
+    let jobs = fetch_scan_jobs(pool, None).await;
+    let schedules = load_schedules(pool).await;
+    let mut order: Vec<String> = Vec::new();
+    for j in &jobs {
+        if !order.contains(&j.target) { order.push(j.target.clone()); }
+    }
+    let targets: Vec<TargetSummary> = order.iter().map(|t| target_summary(t, &runs_of(&jobs, t), &schedules)).collect();
+    HttpResponse::Ok().json(ApiResponse { success: true, message: None, data: Some(targets) })
+}
+
+#[derive(serde::Deserialize)]
+struct TargetQuery {
+    target: String,
+}
+
+/// One target over time: every run with its trace, what is open now and what
+/// was fixed in the last 30 days.
+async fn target_detail(pool: web::Data<DbPool>, query: web::Query<TargetQuery>) -> HttpResponse {
+    let pool = pool.get_ref();
+    let jobs = fetch_scan_jobs(pool, None).await;
+    let runs = runs_of(&jobs, &query.target);
+    if runs.is_empty() {
+        return HttpResponse::NotFound().json(ApiResponse::<()> { success: false, message: Some("Target not found".into()), data: None });
+    }
+    let schedules = load_schedules(pool).await;
+    let owned: Vec<ScanJob> = runs.iter().map(|j| (*j).clone()).collect();
+    let rows = build_run_rows(pool, &owned).await;
+
+    let open = open_findings(pool, &query.target, &runs, &["critical", "high", "medium", "low"]).await;
+    let open_fps: std::collections::HashSet<String> = match runs.iter().rev().find(|j| is_live(&j.status) || j.status == "completed") {
+        Some(cur) => fetch_findings(pool, cur.id).await.into_iter().filter_map(|f| f.fingerprint).collect(),
+        None => Default::default(),
+    };
+
+    // Fixed: present in a completed run, gone from the next completed run,
+    // and not back in the current one.
+    let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::days(30);
+    let completed: Vec<&ScanJob> = runs.iter().copied().filter(|j| j.status == "completed").collect();
+    let mut fixed: Vec<FixedFinding> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    for pair in completed.windows(2).rev() {
+        let (before, after) = (pair[0], pair[1]);
+        if parse_ts(&after.started_at).map(|t| t < cutoff).unwrap_or(true) { continue; }
+        let after_fps: std::collections::HashSet<String> = fetch_findings(pool, after.id).await.into_iter().filter_map(|f| f.fingerprint).collect();
+        for f in fetch_findings(pool, before.id).await {
+            let Some(fp) = f.fingerprint.clone() else { continue };
+            if after_fps.contains(&fp) || open_fps.contains(&fp) || !seen.insert(fp) { continue; }
+            fixed.push(FixedFinding { severity: f.severity, title: f.title, tool: f.tool, run_id: after.id, fixed_at: after.started_at.clone() });
+        }
+    }
+
+    let summary = target_summary(&query.target, &runs, &schedules);
+    HttpResponse::Ok().json(ApiResponse {
+        success: true,
+        message: None,
+        data: Some(TargetDetail {
+            summary,
+            runs: rows.into_iter().map(|r| TargetRun {
+                score: (r.status == "completed").then(|| r.score).flatten(),
+                grade: r.grade.clone(),
+                run: r,
+            }).collect(),
+            open,
+            fixed,
         }),
     })
 }

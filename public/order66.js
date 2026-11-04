@@ -328,7 +328,7 @@
     document.addEventListener('click', function(e) {
         if (!active) return;
         var target = e.target;
-        if (target.classList && (target.classList.contains('btn-primary') || target.classList.contains('btn-lg'))) {
+        if (target.closest && target.closest('.wt-btn-solid')) {
             playLightsaberSound();
         }
     });

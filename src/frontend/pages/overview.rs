@@ -242,10 +242,10 @@ fn attention_row(a: AttentionItem, now: ReadSignal<f64>) -> impl IntoView {
 }
 
 fn target_row(index: usize, row: Memo<Option<TargetSummary>>) -> impl IntoView {
-    let href = move || row.with(|t| t.as_ref().map(|t| format!("/runs/{}", t.latest_scan_id)).unwrap_or_else(|| "/runs".into()));
+    let href = move || row.with(|t| t.as_ref().map(|t| format!("/targets?t={}", fmt::encode(&t.target))).unwrap_or_else(|| "/targets".into()));
     let live = move || row.with(|t| t.as_ref().map(|t| t.latest_status == "running" || t.latest_status == "pending").unwrap_or(false));
     let meta = move || row.with(|t| t.as_ref().map(|t| {
-        let kind = if t.target_source == "url" { "Web" } else { "Source" };
+        let kind = fmt::target_kind(&t.target_source);
         match (&t.schedule, live()) {
             (_, true) => format!("{} · run live", kind),
             (Some(s), _) => format!("{} · {}", kind, s),

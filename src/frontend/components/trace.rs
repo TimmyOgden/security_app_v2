@@ -2,7 +2,7 @@ use leptos::*;
 use crate::models::TraceMark;
 
 /// Spike height as a share of the trace's drawable height, by severity.
-fn spike_height(severity: &str) -> f64 {
+pub fn spike_height(severity: &str) -> f64 {
     match severity {
         "critical" => 0.82,
         "high" => 0.62,
@@ -46,6 +46,17 @@ pub fn RunTrace(
     /// Accessible name; without one the trace is decorative.
     #[prop(optional, into)]
     label: Option<String>,
+    /// Another run's spikes, drawn dashed behind this one when `ghost_on`.
+    #[prop(optional, into)]
+    ghost: Option<Signal<Vec<TraceMark>>>,
+    #[prop(optional, into)]
+    ghost_on: Option<Signal<bool>>,
+    /// Vertical time lines as (position 0..1, major).
+    #[prop(optional, into)]
+    grid: Option<Signal<Vec<(f64, bool)>>>,
+    /// Dashed horizontal lines at each severity's spike height.
+    #[prop(default = false)]
+    guides: bool,
 ) -> impl IntoView {
     let base = height - 2.0;
     let span = height - 6.0;
@@ -74,6 +85,30 @@ pub fn RunTrace(
     let head_x = move || format!("{:.2}", progress.get().clamp(0.0, 1.0) * width);
     let spikes = move || marks.get().into_iter().enumerate().collect::<Vec<_>>();
     let hidden = label.is_none();
+    let segment = move |m: &TraceMark| {
+        let x = m.pos.clamp(0.0, 1.0) * width;
+        let h = spike_height(&m.severity) * span;
+        format!("M{:.1} {:.1}L{:.1} {:.1}L{:.1} {:.1}", x - half, base, x, base - h, x + half, base)
+    };
+    let ghost_d = move || {
+        let d: String = ghost.map(|g| g.get()).unwrap_or_default().iter().map(segment).collect();
+        if d.is_empty() { "M0 0".to_string() } else { d }
+    };
+    let ghost_class = move || if ghost_on.map(|g| g.get()).unwrap_or(false) { "ghost on" } else { "ghost" };
+    let grid_d = move |major: bool| {
+        let d: String = grid.map(|g| g.get()).unwrap_or_default().iter()
+            .filter(|(_, m)| *m == major)
+            .map(|(p, _)| format!("M{:.1} {}V{:.1}", p * width, if major { 0.0 } else { 8.0 }, base))
+            .collect();
+        if d.is_empty() { "M0 0".to_string() } else { d }
+    };
+    let guides_d = if guides {
+        ["critical", "high", "medium", "low"].iter()
+            .map(|s| format!("M0 {:.1}H{:.1}", base - spike_height(s) * span, width))
+            .collect::<String>()
+    } else {
+        "M0 0".to_string()
+    };
 
     view! {
         <svg
@@ -85,21 +120,16 @@ pub fn RunTrace(
             aria-label=label
             aria-hidden=if hidden { Some("true") } else { None }
         >
+            <path class="grid-minor" d=move || grid_d(false)></path>
+            <path class="grid-major" d=move || grid_d(true)></path>
+            <path class="guides" d=guides_d></path>
             <path class=move || if pending.get() { "base pending" } else { "base" } d=base_d></path>
+            <g class=ghost_class><path d=ghost_d></path></g>
             <path class="noise" d=noise_d></path>
             <For
                 each=spikes
                 key=|(i, m)| (*i, m.severity.clone())
-                children=move |(_, m)| {
-                    let x = m.pos.clamp(0.0, 1.0) * width;
-                    let h = spike_height(&m.severity) * span;
-                    view! {
-                        <path
-                            class=spike_class(&m.severity)
-                            d=format!("M{:.1} {:.1}L{:.1} {:.1}L{:.1} {:.1}", x - half, base, x, base - h, x + half, base)
-                        ></path>
-                    }
-                }
+                children=move |(_, m)| view! { <path class=spike_class(&m.severity) d=segment(&m)></path> }
             />
             <line
                 class="head"
