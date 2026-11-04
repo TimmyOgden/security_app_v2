@@ -2,8 +2,7 @@ use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
 use super::pages::*;
-use super::components::sidebar::Sidebar;
-use super::components::scan_status_bar::ScanStatusBar;
+use super::components::top_bar::TopBar;
 
 /// Tools hidden from normal view — revealed when Order 66 mode is active.
 pub const RESTRICTED_TOOLS: &[&str] = &["sqlmap", "openvas", "bandit", "nmap"];
@@ -66,26 +65,29 @@ pub fn App() -> impl IntoView {
         <Meta name="viewport" content="width=device-width, initial-scale=1"/>
         <Link rel="preconnect" href="https://fonts.googleapis.com"/>
         <Link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/>
-        <Link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"/>
+        <Link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"/>
         <Script src="/order66.js"/>
 
         <Router>
             <div class="app-wrapper">
-                <Sidebar/>
+                <TopBar/>
                 <main class="main-content">
                     <Routes>
-                        <Route path="/" view=DashboardPage/>
+                        <Route path="/" view=OverviewPage/>
+                        <Route path="/runs" view=RunsPage/>
+                        <Route path="/runs/:id" view=ResultsPage/>
+                        <Route path="/targets" view=TargetsPage/>
                         <Route path="/scan" view=ScanPage/>
-                        <Route path="/scans" view=ScansPage/>
+                        // Old paths, kept so bookmarks and report links still resolve.
+                        <Route path="/scans" view=RunsPage/>
+                        <Route path="/scans/:id" view=ResultsPage/>
                         <Route path="/schedules" view=SchedulesPage/>
                         <Route path="/welcome" view=WelcomePage/>
-                        <Route path="/scans/:id" view=ResultsPage/>
                         <Route path="/tools" view=ToolsPage/>
                         <Route path="/settings" view=SettingsPage/>
                         <Route path="/reports" view=ReportsPage/>
                     </Routes>
                 </main>
-                <ScanStatusBar/>
             </div>
         </Router>
     }

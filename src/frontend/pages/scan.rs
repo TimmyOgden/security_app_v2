@@ -1,4 +1,5 @@
 use leptos::*;
+use leptos_router::*;
 use crate::models::*;
 use crate::frontend::app::{RESTRICTED_TOOLS, RESTRICTED_PRESETS};
 
@@ -40,7 +41,7 @@ pub fn ScanPage() -> impl IntoView {
             match do_start_scan(req).await {
                 Ok(scan_id) => {
                     let navigate = leptos_router::use_navigate();
-                    navigate(&format!("/scans/{}", scan_id), Default::default());
+                    navigate(&format!("/runs/{}", scan_id), Default::default());
                 }
                 Err(e) => {
                     #[cfg(feature = "hydrate")]
@@ -53,325 +54,236 @@ pub fn ScanPage() -> impl IntoView {
         }
     });
 
+    let preset_items = move || {
+        let adv = advanced_mode.get();
+        presets.get().and_then(|r| r.ok()).unwrap_or_default().into_iter()
+            .filter(|p| adv || !RESTRICTED_PRESETS.contains(&p.name.as_str()))
+            .collect::<Vec<_>>()
+    };
+    let tool_items = move || {
+        let adv = advanced_mode.get();
+        tools.get().and_then(|r| r.ok()).unwrap_or_default().into_iter()
+            .filter(|t| adv || !RESTRICTED_TOOLS.contains(&t.name.as_str()))
+            .collect::<Vec<_>>()
+    };
+    let fits = move |web_only: bool| (target_source.get() == "url") == web_only;
+    let summary = move || {
+        let preset = presets.get().and_then(|r| r.ok()).unwrap_or_default().into_iter()
+            .find(|p| p.name == scan_type.get());
+        let chosen = selected_tools.get();
+        let planned: Vec<String> = if chosen.is_empty() {
+            preset.as_ref().map(|p| p.tools.clone()).unwrap_or_default()
+        } else {
+            chosen
+        };
+        let adv = advanced_mode.get();
+        let planned: Vec<String> = planned.into_iter().filter(|t| adv || !RESTRICTED_TOOLS.contains(&t.as_str())).collect();
+        let runnable = planned.iter().filter(|t| fits(tool_is_web_only(t))).count();
+        let skipped = planned.len() - runnable;
+        let name = preset.map(|p| p.display_name).unwrap_or_else(|| "Custom".into());
+        let tgt = target.get();
+        if tgt.is_empty() {
+            "Choose a target to see what will run.".to_string()
+        } else {
+            format!("{} on {}: {} tool{} will run{}.", name, tgt, runnable, if runnable == 1 { "" } else { "s" },
+                if skipped > 0 { format!(", {} skipped for this target", skipped) } else { String::new() })
+        }
+    };
+    let sources: [(&'static str, &'static str); 3] = [("url", "URL"), ("local", "Local folder"), ("azure", "Azure DevOps")];
+
     view! {
-        <div class="page-header">
-            <h1>"🔍 New Scan"</h1>
-            <p class="page-subtitle">"Configure and launch a security scan"</p>
-        </div>
+        <section aria-label="New run">
+            <div class="eyebrow in" style="--d: 40ms"><A class="eyebrow-link" href="/runs">"Runs"</A>" / New run"</div>
+            <h1 class="page-title in" style="--d: 80ms">"Start a run"</h1>
+            <p class="page-lede in" style="--d: 100ms">"Pick what to scan and how. Tools that cannot work on the chosen target are skipped."</p>
+        </section>
 
-        <div class="card">
-            <h3>"Scan Configuration"</h3>
-
-            <div class="form-group">
-                <label>"Target Source"</label>
-                <div class="radio-group">
-                    <label class="radio-label">
-                        <input type="radio" name="source" value="url"
-                            checked=move || target_source.get() == "url"
-                            on:change=move |_| set_target_source.set("url".into())/>
-                        " URL"
-                    </label>
-                    <label class="radio-label">
-                        <input type="radio" name="source" value="local"
-                            checked=move || target_source.get() == "local"
-                            on:change=move |_| set_target_source.set("local".into())/>
-                        " Local Folder"
-                    </label>
-                    <label class="radio-label">
-                        <input type="radio" name="source" value="azure"
-                            checked=move || target_source.get() == "azure"
-                            on:change=move |_| set_target_source.set("azure".into())/>
-                        " Azure DevOps"
-                    </label>
+        <ol class="steps">
+            <li class="step in" style="--d: 140ms">
+                <div class="step-head"><span class="step-n">"1"</span><h2>"Target"</h2></div>
+                <div class="seg" role="radiogroup" aria-label="Target source">
+                    {sources.into_iter().map(|(key, label)| view! {
+                        <button type="button" role="radio" class="seg-btn"
+                            aria-checked=move || if target_source.get() == key { "true" } else { "false" }
+                            on:click=move |_| set_target_source.set(key.to_string())>{label}</button>
+                    }).collect_view()}
                 </div>
-            </div>
-
-            <div class="form-group">
-                <label>"Target"</label>
-                <input type="text" class="form-control"
-                    placeholder=move || {
-                        if target_source.get() == "url" { "https://example.com" }
-                        else { "/projects/my-app" }
-                    }
-                    prop:value=move || target.get()
-                    on:input=move |ev| set_target.set(event_target_value(&ev))/>
-
-                {move || {
-                    if target_source.get() == "local" {
-                        view! {
-                            <div class="folder-browser">
-                                <div class="folder-browser-header">
-                                    <button class="btn btn-sm"
-                                        on:click=move |_| {
-                                            set_folder_search.set(String::new());
-                                            set_browse_path.set(Some("/projects".into()));
-                                        }>
-                                        "📂 Browse Projects"
-                                    </button>
-                                    <Suspense fallback=move || view! { <span>"..."</span> }>
-                                        {move || drives.get().map(|data| match data {
-                                            Ok(drive_list) => {
-                                                if drive_list.is_empty() {
-                                                    view! {}.into_view()
-                                                } else {
-                                                    view! {
-                                                        <select class="form-control drive-select"
-                                                            on:change=move |ev| {
-                                                                let val = event_target_value(&ev);
-                                                                if !val.is_empty() {
-                                                                    set_folder_search.set(String::new());
-                                                                    set_browse_path.set(Some(val));
-                                                                }
-                                                            }>
-                                                            <option value="">"💻 Browse Drive..."</option>
-                                                            {drive_list.into_iter().map(|d| {
-                                                                let path = d.path.clone();
-                                                                view! {
-                                                                    <option value={path}>{format!("{}:", d.letter)}</option>
-                                                                }
-                                                            }).collect_view()}
-                                                        </select>
-                                                    }.into_view()
-                                                }
-                                            }
-                                            Err(_) => view! {}.into_view(),
-                                        })}
-                                    </Suspense>
-                                </div>
-                                {move || browse_path.get().map(|_| view! {
-                                    <div class="folder-browser-panel">
-                                        <div class="folder-browser-search">
-                                            <input type="text" class="form-control"
-                                                placeholder="Search files and folders..."
+                <label class="field-label step-field">
+                    {move || if target_source.get() == "url" { "URL" } else { "Path" }}
+                    <input type="text" class="field"
+                        placeholder=move || if target_source.get() == "url" { "https://example.com" } else { "/projects/my-app" }
+                        prop:value=move || target.get()
+                        on:input=move |ev| set_target.set(event_target_value(&ev))/>
+                </label>
+                <Show when=move || target_source.get() == "local">
+                    <div class="fb-bar">
+                        <button type="button" class="mini-btn" on:click=move |_| {
+                            set_folder_search.set(String::new());
+                            set_browse_path.set(Some("/projects".into()));
+                        }>"Browse projects"</button>
+                        {move || drives.get().and_then(|r| r.ok()).filter(|d| !d.is_empty()).map(|drive_list| view! {
+                            <select class="field-sm" aria-label="Browse a drive" on:change=move |ev| {
+                                let val = event_target_value(&ev);
+                                if !val.is_empty() {
+                                    set_folder_search.set(String::new());
+                                    set_browse_path.set(Some(val));
+                                }
+                            }>
+                                <option value="">"Browse a drive"</option>
+                                {drive_list.into_iter().map(|d| view! { <option value={d.path.clone()}>{format!("{}:", d.letter)}</option> }).collect_view()}
+                            </select>
+                        })}
+                    </div>
+                    <div class=move || if browse_path.get().is_some() { "expand open" } else { "expand" }>
+                        <div>
+                            <div class="fb">
+                                {move || folders.get().map(|data| match data {
+                                    Ok(resp) => {
+                                        let current = resp.current_path.clone();
+                                        let current_for_select = resp.current_path.clone();
+                                        let parent = resp.parent.clone();
+                                        let search = folder_search.get().to_lowercase();
+                                        let entries: Vec<_> = resp.entries.iter()
+                                            .filter(|e| search.is_empty() || e.name.to_lowercase().contains(&search))
+                                            .cloned().collect();
+                                        let empty = entries.is_empty();
+                                        view! {
+                                            <div class="fb-head">
+                                                <span class="fb-path">{current}</span>
+                                                {parent.map(|p| view! {
+                                                    <button type="button" class="mini-btn" on:click=move |_| {
+                                                        set_folder_search.set(String::new());
+                                                        set_browse_path.set(Some(p.clone()));
+                                                    }>"Up"</button>
+                                                })}
+                                                <button type="button" class="mini-btn" on:click=move |_| {
+                                                    set_target.set(current_for_select.clone());
+                                                    set_browse_path.set(None);
+                                                }>"Use this folder"</button>
+                                                <button type="button" class="mini-btn" aria-label="Close the folder browser" on:click=move |_| set_browse_path.set(None)>"Close"</button>
+                                            </div>
+                                            <input type="search" class="field-sm fb-search" placeholder="Filter this folder" aria-label="Filter this folder"
                                                 prop:value=move || folder_search.get()
                                                 on:input=move |ev| set_folder_search.set(event_target_value(&ev))/>
-                                        </div>
-                                        <Suspense fallback=move || view! { <div class="folder-loading">"Loading..."</div> }>
-                                            {move || folders.get().map(|data| match data {
-                                                Ok(resp) => {
-                                                    let current = resp.current_path.clone();
-                                                    let parent = resp.parent.clone();
-                                                    let search = folder_search.get().to_lowercase();
-                                                    let filtered: Vec<_> = resp.entries.iter()
-                                                        .filter(|e| search.is_empty() || e.name.to_lowercase().contains(&search))
-                                                        .cloned()
-                                                        .collect();
+                                            <div class="fb-list">
+                                                {empty.then(|| view! { <p class="fb-empty">"Nothing matches."</p> })}
+                                                {entries.into_iter().map(|entry| {
+                                                    let path = entry.path.clone();
+                                                    let is_dir = entry.is_dir;
                                                     view! {
-                                                        <div class="folder-browser-nav">
-                                                            <span class="folder-current-path">{current.clone()}</span>
-                                                            {parent.map(|p| {
-                                                                view! {
-                                                                    <button class="btn btn-xs"
-                                                                        on:click=move |_| {
-                                                                            set_folder_search.set(String::new());
-                                                                            set_browse_path.set(Some(p.clone()));
-                                                                        }>
-                                                                        "⬆ Up"
-                                                                    </button>
-                                                                }
-                                                            })}
-                                                            <button class="btn btn-xs btn-primary btn-select-current"
-                                                                on:click={
-                                                                    let cur = current.clone();
-                                                                    move |_| {
-                                                                        set_target.set(cur.clone());
-                                                                        set_browse_path.set(None);
-                                                                    }
-                                                                }>
-                                                                "✓ Select This Folder"
-                                                            </button>
-                                                            <button class="btn btn-xs folder-close-btn"
-                                                                on:click=move |_| set_browse_path.set(None)>
-                                                                "✕"
-                                                            </button>
-                                                        </div>
-                                                        <div class="folder-entries">
-                                                            {if filtered.is_empty() {
-                                                                view! { <div class="folder-empty">"No matching files or folders"</div> }.into_view()
+                                                        <button type="button" class="fb-row" on:click=move |_| {
+                                                            if is_dir {
+                                                                set_folder_search.set(String::new());
+                                                                set_browse_path.set(Some(path.clone()));
                                                             } else {
-                                                                filtered.into_iter().map(|entry| {
-                                                                    let path = entry.path.clone();
-                                                                    let path2 = entry.path.clone();
-                                                                    let is_dir = entry.is_dir;
-                                                                    view! {
-                                                                        <div class="folder-entry"
-                                                                            on:click=move |_| {
-                                                                                if is_dir {
-                                                                                    set_folder_search.set(String::new());
-                                                                                    set_browse_path.set(Some(path.clone()));
-                                                                                } else {
-                                                                                    set_target.set(path.clone());
-                                                                                    set_browse_path.set(None);
-                                                                                }
-                                                                            }>
-                                                                            <span class="folder-entry-icon">
-                                                                                {if is_dir { "📁" } else { "📄" }}
-                                                                            </span>
-                                                                            <span class="folder-entry-name">{entry.name.clone()}</span>
-                                                                            {is_dir.then(|| view! {
-                                                                                <button class="btn btn-xs btn-select-folder"
-                                                                                    on:click=move |ev| {
-                                                                                        ev.stop_propagation();
-                                                                                        set_target.set(path2.clone());
-                                                                                        set_browse_path.set(None);
-                                                                                    }>
-                                                                                    "Select"
-                                                                                </button>
-                                                                            })}
-                                                                        </div>
-                                                                    }
-                                                                }).collect_view()
+                                                                set_target.set(path.clone());
+                                                                set_browse_path.set(None);
+                                                            }
+                                                        }>
+                                                            {if is_dir {
+                                                                view! { <svg class="fb-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10v10H3z"></path></svg> }
+                                                            } else {
+                                                                view! { <svg class="fb-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"></path><path d="M14 3v4h4"></path></svg> }
                                                             }}
-                                                        </div>
-                                                    }.into_view()
-                                                }
-                                                Err(_) => view! { <div class="folder-empty">"Failed to load folder"</div> }.into_view(),
-                                            })}
-                                        </Suspense>
-                                    </div>
+                                                            <span class="fb-name">{entry.name.clone()}</span>
+                                                            <span class="fb-kind">{if is_dir { "Open" } else { "Use file" }}</span>
+                                                        </button>
+                                                    }
+                                                }).collect_view()}
+                                            </div>
+                                        }.into_view()
+                                    }
+                                    Err(_) => view! { <p class="fb-empty">"This folder could not be read."</p> }.into_view(),
                                 })}
                             </div>
-                        }.into_view()
+                        </div>
+                    </div>
+                </Show>
+            </li>
+
+            <li class="step in" style="--d: 180ms">
+                <div class="step-head"><span class="step-n">"2"</span><h2>"Preset"</h2></div>
+                <div class="preset-tiles">
+                    <For
+                        each=preset_items
+                        key=|p| p.name.clone()
+                        children=move |preset| {
+                            let name = preset.name.clone();
+                            let name_click = preset.name.clone();
+                            let tool_tags = preset.tools.clone();
+                            view! {
+                                <button type="button" class="tile"
+                                    aria-pressed=move || if scan_type.get() == name { "true" } else { "false" }
+                                    on:click=move |_| set_scan_type.set(name_click.clone())>
+                                    <span class="tile-name">{preset.display_name.clone()}</span>
+                                    <span class="tile-desc">{preset.description.clone()}</span>
+                                    <span class="tile-tags">
+                                        {tool_tags.into_iter()
+                                            .filter(move |t| advanced_mode.get_untracked() || !RESTRICTED_TOOLS.contains(&t.as_str()))
+                                            .map(|t| {
+                                                let web = tool_is_web_only(&t);
+                                                view! { <span class=move || if fits(web) { "ttag" } else { "ttag skipped" }>{t.clone()}</span> }
+                                            }).collect_view()}
+                                    </span>
+                                </button>
+                            }
+                        }
+                    />
+                </div>
+            </li>
+
+            <li class="step in" style="--d: 220ms">
+                <div class="step-head"><span class="step-n">"3"</span><h2>"Tools"</h2><span class="section-note">"Optional. Leave all unticked to use the preset's tools."</span></div>
+                <p class="notice">
+                    {move || if target_source.get() == "url" {
+                        "A URL target skips the code tools (Bandit, SonarQube, Trivy, Dependency-Check): they need source code."
                     } else {
-                        view! {}.into_view()
-                    }
-                }}
-            </div>
+                        "A folder target skips the web and network tools (ZAP, Nikto, SQLMap, Nmap, OpenVAS): they need a URL."
+                    }}
+                </p>
+                <div class="tool-checks">
+                    <For
+                        each=tool_items
+                        key=|t| t.name.clone()
+                        children=move |tool| {
+                            let name = tool.name.clone();
+                            let name_change = tool.name.clone();
+                            let web_only = tool.web_only;
+                            let restricted = RESTRICTED_TOOLS.contains(&tool.name.as_str());
+                            view! {
+                                <label class=move || if fits(web_only) { "tool-check" } else { "tool-check off" }>
+                                    <input type="checkbox"
+                                        prop:checked=move || selected_tools.get().contains(&name)
+                                        disabled=move || !fits(web_only)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            set_selected_tools.update(|v| {
+                                                if checked { v.push(name_change.clone()); } else { v.retain(|x| x != &name_change); }
+                                            });
+                                        }/>
+                                    <span class="tool-check-name">{tool.display_name.clone()}</span>
+                                    <span class="tool-check-meta">
+                                        {tool.category.clone()}
+                                        {restricted.then(|| " · advanced")}
+                                        {move || (!fits(web_only)).then(|| if web_only { " · needs a URL" } else { " · needs source code" })}
+                                    </span>
+                                </label>
+                            }
+                        }
+                    />
+                </div>
+            </li>
 
-            <div class="form-group">
-                <label>"Scan Preset"</label>
-                <Suspense fallback=move || view! { <p>"Loading presets..."</p> }>
-                    {move || presets.get().map(|data| match data {
-                        Ok(preset_list) => view! {
-                            <div class="preset-grid">
-                                <For
-                                    each=move || {
-                                        let adv = advanced_mode.get();
-                                        preset_list.iter()
-                                            .filter(|p| adv || !RESTRICTED_PRESETS.contains(&p.name.as_str()))
-                                            .cloned()
-                                            .collect::<Vec<_>>()
-                                    }
-                                    key=|p| p.name.clone()
-                                    children=move |preset| {
-                                        let name = preset.name.clone();
-                                        let name2 = preset.name.clone();
-                                        let adv = advanced_mode.get();
-                                        let visible_tools: Vec<_> = preset.tools.iter()
-                                            .filter(|t| adv || !RESTRICTED_TOOLS.contains(&t.as_str()))
-                                            .cloned()
-                                            .collect();
-                                        view! {
-                                            <div class=move || {
-                                                if scan_type.get() == name { "preset-card active" } else { "preset-card" }
-                                            }
-                                            on:click=move |_| set_scan_type.set(name2.clone())>
-                                                <h4>{preset.display_name.clone()}</h4>
-                                                <p>{preset.description.clone()}</p>
-                                                <div class="preset-tools">
-                                                    {visible_tools.iter().map(|t| {
-                                                        let t_name = t.clone();
-                                                        let is_web = tool_is_web_only(&t_name);
-                                                        view! {
-                                                            <span class=move || {
-                                                                let ts = target_source.get();
-                                                                if (ts == "url") == is_web { "tool-tag" } else { "tool-tag tool-tag-skipped" }
-                                                            }>{t_name.clone()}</span>
-                                                        }
-                                                    }).collect_view()}
-                                                </div>
-                                            </div>
-                                        }
-                                    }
-                                />
-                            </div>
-                        }.into_view(),
-                        Err(_) => view! { <p>"Loading..."</p> }.into_view(),
-                    })}
-                </Suspense>
-            </div>
-
-            {move || {
-                let ts = target_source.get();
-                if ts == "url" {
-                    view! {
-                        <div class="compat-banner">
-                            "ℹ️ URL target: SAST/SCA tools (Bandit, SonarQube, Trivy, Dependency-Check) require source code and will be skipped."
-                        </div>
-                    }.into_view()
-                } else {
-                    view! {
-                        <div class="compat-banner">
-                            "ℹ️ Local/Code target: DAST/Network tools (ZAP, Nikto, SQLMap, Nmap, OpenVAS) require a URL and will be skipped."
-                        </div>
-                    }.into_view()
-                }
-            }}
-
-            <div class="form-group">
-                <label>"Tools"</label>
-                <Suspense fallback=move || view! { <p>"Loading tools..."</p> }>
-                    {move || tools.get().map(|data| match data {
-                        Ok(tool_list) => view! {
-                            <div class="tools-checkbox-grid">
-                                <For
-                                    each=move || {
-                                        let adv = advanced_mode.get();
-                                        tool_list.clone().into_iter()
-                                            .filter(move |t| adv || !RESTRICTED_TOOLS.contains(&t.name.as_str()))
-                                            .collect::<Vec<_>>()
-                                    }
-                                    key=|t| t.name.clone()
-                                    children=move |tool| {
-                                        let name = tool.name.clone();
-                                        let name2 = tool.name.clone();
-                                        let is_restricted = RESTRICTED_TOOLS.contains(&tool.name.as_str());
-                                        let web_only = tool.web_only;
-                                        let compat_hint = if web_only { "URL targets only" } else { "local/code targets only" };
-                                        view! {
-                                            <label class=move || {
-                                                let ts = target_source.get();
-                                                let compat = (ts == "url") == web_only;
-                                                let base = if is_restricted { "checkbox-label restricted-tool" } else { "checkbox-label" };
-                                                if compat { base.to_string() } else { format!("{} tool-incompatible", base) }
-                                            }>
-                                                <input type="checkbox"
-                                                    prop:checked=move || selected_tools.get().contains(&name)
-                                                    disabled=move || (target_source.get() == "url") != web_only
-                                                    on:change=move |ev| {
-                                                        let checked = event_target_checked(&ev);
-                                                        set_selected_tools.update(|v| {
-                                                            if checked {
-                                                                v.push(name2.clone());
-                                                            } else {
-                                                                v.retain(|x| x != &name2);
-                                                            }
-                                                        });
-                                                    }/>
-                                                " " {tool.display_name.clone()}
-                                                <span class="tool-category">{format!(" ({})", tool.category)}</span>
-                                                {move || {
-                                                    let ts = target_source.get();
-                                                    let compat = (ts == "url") == web_only;
-                                                    if compat { None } else { Some(view! { <span class="tool-compat-note">{compat_hint}</span> }) }
-                                                }}
-                                            </label>
-                                        }
-                                    }
-                                />
-                            </div>
-                        }.into_view(),
-                        Err(_) => view! { <p>"Loading..."</p> }.into_view(),
-                    })}
-                </Suspense>
-            </div>
-
-            <button class="btn btn-primary btn-lg"
-                disabled=move || is_scanning.get() || target.get().is_empty()
-                on:click=move |_| start_scan.dispatch(())>
-                {move || if is_scanning.get() { "⏳ Starting scan..." } else if advanced_mode.get() { "🚀 Execute Order 66" } else { "🚀 Run Scan" }}
-            </button>
-        </div>
+            <li class="step in" style="--d: 260ms">
+                <div class="step-head"><span class="step-n">"4"</span><h2>"Start"</h2></div>
+                <p class="step-summary" aria-live="polite">{summary}</p>
+                <button type="button" class="wt-btn wt-btn-solid"
+                    disabled=move || is_scanning.get() || target.get().is_empty()
+                    on:click=move |_| start_scan.dispatch(())>
+                    {move || if is_scanning.get() { "Starting..." } else if advanced_mode.get() { "Execute Order 66" } else { "Start run" }}
+                </button>
+            </li>
+        </ol>
     }
 }
 
