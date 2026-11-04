@@ -1,70 +1,65 @@
 use leptos::*;
+use leptos_router::*;
 use crate::models::*;
+use crate::frontend::components::fmt;
 
+/// Every generated report, newest first, each linked to its run.
 #[component]
 pub fn ReportsPage() -> impl IntoView {
     let reports = create_local_resource(|| (), |_| async { fetch_reports().await });
+    let list = move || {
+        let mut l = reports.get().and_then(|r| r.ok()).unwrap_or_default();
+        l.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        l
+    };
+    let loaded = move || reports.get().is_some();
+    let empty = move || loaded() && list().is_empty();
+    let title = move || match list().len() {
+        0 => "Reports".to_string(),
+        1 => "1 report".to_string(),
+        n => format!("{} reports", n),
+    };
 
     view! {
-        <div class="page-header">
-            <h1>"📄 Reports"</h1>
-            <p class="page-subtitle">"Generated scan reports"</p>
-        </div>
+        <section aria-label="Reports">
+            <div class="eyebrow in" style="--d: 40ms"><A class="eyebrow-link" href="/runs">"Runs"</A>" / Reports"</div>
+            <h1 class="page-title in" style="--d: 80ms">{title}</h1>
+            <p class="page-lede in" style="--d: 100ms">"Reports are made from a run's page with Export PDF."</p>
+        </section>
 
-        <div class="card">
-            <Suspense fallback=move || view! { <div class="loading">"Loading reports..."</div> }>
-                {move || reports.get().map(|data| match data {
-                    Ok(report_list) => {
-                        if report_list.is_empty() {
-                            view! { <p class="empty-state">"No reports generated yet. Run a scan and generate a report from the results page."</p> }.into_view()
-                        } else {
-                            view! {
-                                <table class="data-table">
-                                    <thead>
-                                        <tr>
-                                            <th>"ID"</th>
-                                            <th>"Scan ID"</th>
-                                            <th>"Format"</th>
-                                            <th>"Created"</th>
-                                            <th>"Emailed"</th>
-                                            <th>"Actions"</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <For
-                                            each=move || report_list.clone()
-                                            key=|r| r.id
-                                            children=|report| {
-                                                let scan_id = report.scan_job_id;
-                                                let fmt = report.format.clone();
-                                                view! {
-                                                <tr>
-                                                    <td>{report.id}</td>
-                                                    <td>
-                                                        <a href=format!("/scans/{}", report.scan_job_id)>
-                                                            {format!("Scan #{}", report.scan_job_id)}
-                                                        </a>
-                                                    </td>
-                                                    <td><span class=format!("badge badge-format-{}", report.format)>{report.format.to_uppercase()}</span></td>
-                                                    <td>{report.created_at.clone()}</td>
-                                                    <td>{if report.emailed { "✅" } else { "—" }}</td>
-                                                    <td>
-                                                        {(fmt == "pdf").then(|| view! {
-                                                            <a class="btn-sm btn-pdf" href=format!("/api/reports/{}/download-pdf", scan_id) target="_blank">"📥 Download"</a>
-                                                        })}
-                                                    </td>
-                                                </tr>
-                                            }}
-                                        />
-                                    </tbody>
-                                </table>
-                            }.into_view()
-                        }
-                    },
-                    Err(_) => view! { <div class="loading">"Loading..."</div> }.into_view(),
-                })}
-            </Suspense>
-        </div>
+        <section class="in" style="--d: 140ms" aria-label="Report list">
+            <div class="rep-cols" aria-hidden="true">
+                <span>"Run"</span><span>"Format"</span><span>"Made"</span><span>"Emailed"</span><span></span>
+            </div>
+            <For
+                each=list
+                key=|r| r.id
+                children=|r| {
+                    let run = r.scan_job_id;
+                    let pdf = r.format == "pdf";
+                    view! {
+                        <div class="rep-row row-enter">
+                            <a class="rep-run" href=format!("/runs/{}", run)>
+                                <span class="num">{format!("Run {}", run)}</span>
+                                <span class="rep-file">{r.file_path.rsplit(['/', '\\']).next().unwrap_or_default().to_string()}</span>
+                            </a>
+                            <span class="tag">{r.format.to_uppercase()}</span>
+                            <span class="num c-dim">{fmt::short_date(&r.created_at)}</span>
+                            <span class="c-dim">{if r.emailed { "Emailed" } else { "No" }}</span>
+                            <span class="rep-act">
+                                {pdf.then(|| view! {
+                                    <a class="mini-btn" href=format!("/api/reports/{}/download-pdf", run) target="_blank" rel="noopener"
+                                        aria-label=format!("Download the PDF for run {}", run)>"Download"</a>
+                                })}
+                            </span>
+                        </div>
+                    }
+                }
+            />
+            <Show when=empty>
+                <p class="empty-line">"No reports yet. Open a finished run and use Export PDF."</p>
+            </Show>
+        </section>
     }
 }
 

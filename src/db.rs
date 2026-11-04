@@ -153,6 +153,13 @@ pub async fn init_db(database_url: &str) -> DbPool {
         .execute(&pool)
         .await;
 
+    // Migration: when the finding was recorded, so a run can be drawn as a
+    // timeline (the run trace on Overview, Runs and the run page). Older rows
+    // stay NULL and are placed by their tool's position in the run instead.
+    let _ = sqlx::query("ALTER TABLE findings ADD COLUMN found_at TEXT")
+        .execute(&pool)
+        .await;
+
     pool
 }
 

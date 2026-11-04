@@ -51,6 +51,138 @@ pub struct Finding {
     pub fingerprint: Option<String>,
     pub triage_status: Option<String>,
     pub triage_note: Option<String>,
+    pub found_at: Option<String>,
+}
+
+// ── Run traces, Runs list and Overview ──
+
+/// One finding placed on a run's timeline: `pos` is 0..1 of the run's
+/// elapsed time (finished runs: of their duration).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TraceMark {
+    pub pos: f64,
+    pub severity: String,
+    /// The finding's row id, so a list row can point at its spike.
+    pub id: i64,
+    pub tool: String,
+}
+
+/// One tool's slot on a run's timeline (positions 0..1, like TraceMark).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Lane {
+    pub tool: String,
+    pub start: f64,
+    pub end: f64,
+    /// "done", "active" or "pending".
+    pub state: String,
+    pub findings: i64,
+    pub seconds: Option<i64>,
+}
+
+/// The previous completed run of the same target, for comparison.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreviousRun {
+    pub id: i64,
+    pub started_at: String,
+    pub score: i64,
+    pub grade: String,
+    pub counts: [i64; 5],
+    pub marks: Vec<TraceMark>,
+}
+
+/// GET /api/runs/:id — everything the run page draws besides findings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunDetail {
+    pub run: RunRow,
+    pub target_source: String,
+    pub tools: Vec<String>,
+    pub counts: [i64; 5],
+    pub lanes: Vec<Lane>,
+    pub previous: Option<PreviousRun>,
+}
+
+/// A row in GET /api/runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunRow {
+    pub id: i64,
+    pub scan_type: String,
+    pub target: String,
+    pub status: String,
+    pub started_at: String,
+    pub duration_seconds: Option<i64>,
+    pub elapsed_seconds: i64,
+    /// Where the trace head sits, 0..1 (1 once the run has ended).
+    pub progress: f64,
+    pub current_tool: Option<String>,
+    pub tools_total: Option<i64>,
+    pub tools_completed: Option<i64>,
+    pub critical: i64,
+    pub high: i64,
+    pub other: i64,
+    pub score: Option<i64>,
+    pub grade: Option<String>,
+    pub has_pdf: bool,
+    pub marks: Vec<TraceMark>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttentionItem {
+    /// The finding's row id (stable key for the list).
+    pub id: i64,
+    pub scan_id: i64,
+    pub target: String,
+    pub tool: String,
+    pub severity: String,
+    pub title: String,
+    /// The first run (of this target) that reported this finding.
+    pub first_seen: Option<String>,
+    /// Reported by a run that is still in progress.
+    pub live: bool,
+    /// New relative to the target's previous completed run.
+    pub new: bool,
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunCounts {
+    pub id: i64,
+    pub status: String,
+    pub critical: i64,
+    pub high: i64,
+    pub other: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TargetSummary {
+    pub target: String,
+    pub target_source: String,
+    pub latest_scan_id: i64,
+    pub latest_status: String,
+    pub runs: Vec<RunCounts>,
+    pub score: Option<i64>,
+    pub grade: Option<String>,
+    pub previous_score: Option<i64>,
+    pub schedule: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NextRun {
+    pub target: String,
+    pub scan_type: String,
+    pub next_run_at: String,
+    pub interval_hours: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OverviewData {
+    pub critical_open: i64,
+    pub critical_targets: i64,
+    pub high_open: i64,
+    pub live: Vec<RunRow>,
+    pub attention: Vec<AttentionItem>,
+    pub targets: Vec<TargetSummary>,
+    pub next_runs: Vec<NextRun>,
+    pub now: String,
 }
 
 /// Body for POST /api/findings/:id/triage.
@@ -90,7 +222,7 @@ pub struct HealthStatus {
     pub sonarqube: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScanDiffResponse {
     pub compared_to_scan_id: Option<i64>,
     pub compared_to_started_at: Option<String>,
@@ -162,7 +294,7 @@ pub struct DashboardStats {
     pub recent_scans: Vec<ScanJob>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScanStatusResponse {
     pub status: String,
     pub current_tool: Option<String>,
@@ -178,7 +310,7 @@ pub struct ScanStatusResponse {
     pub completed_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LogEntry {
     pub timestamp: String,
     pub level: String,
@@ -267,7 +399,7 @@ pub struct SeverityCounts {
     pub info: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolScore {
     pub tool: String,
     pub score: i64,
@@ -280,7 +412,7 @@ pub struct ToolScore {
     pub grade: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScanScoreResponse {
     pub overall_score: i64,
     pub overall_grade: String,
@@ -328,4 +460,31 @@ pub struct QualityProfile {
     pub is_default: bool,
     pub active_rule_count: i64,
     pub is_built_in: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FixedFinding {
+    pub severity: String,
+    pub title: String,
+    pub tool: String,
+    /// The run in which it was no longer reported.
+    pub run_id: i64,
+    pub fixed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TargetRun {
+    pub run: RunRow,
+    pub score: Option<i64>,
+    pub grade: Option<String>,
+}
+
+/// GET /api/targets/detail?target=…
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TargetDetail {
+    pub summary: TargetSummary,
+    /// Oldest first.
+    pub runs: Vec<TargetRun>,
+    pub open: Vec<AttentionItem>,
+    pub fixed: Vec<FixedFinding>,
 }
